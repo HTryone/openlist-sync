@@ -1,37 +1,76 @@
-# 网盘同步（OpenList ↔ 本地）
+# OpenList 网盘同步
 
-像软件一样：双击 `ui/启动.cmd`（或 `ui/openlist-sync-ui.exe`）→ 右下角托盘图标、自动打开
-配置面板 http://127.0.0.1:5399/ ，后台按间隔自动双向同步，本地删除进网盘 `.trash/<文件夹名>`。
+把多个本地文件夹像"上传网盘"一样，定期**双向同步**到 [OpenList](https://github.com/OpenListTeam/OpenList)（WebDAV）。
+本地始终保有完整副本（读写不跨网），后台按间隔自动同步，删除归档到网盘，不引入 Git / 锁服务 / 重型协作平台。
 
-## 目录
+## 两条使用路径
 
-- `ui/` —— Go 应用（配置面板 + 内置定时同步 + 系统托盘）
-  - `main.go` 服务/配置/同步编排；`filters.go` `.nosy`(gitignore)→rclone 过滤翻译
-  - `picker_windows.go` 系统多选文件夹对话框（含 DPI 感知）；`tray_windows.go` 托盘；`dpi_windows.go`
-  - `web/index.html` 单页界面（内嵌进 exe）
-- `deploy/` —— 早期 Linux systemd / cron / 脚本部署（备选）
-- `docs/` —— 验证清单、弱网调参、备选方案
+| 场景 | 方案 | 入口 |
+|---|---|---|
+| **Windows 桌面（推荐日常用）** | 图形面板 + 系统托盘 + 内置定时同步 | [`ui/`](ui/README.md) → 分发包 [`dist/`](ui/README.md) |
+| **Linux 服务器（无图形界面）** | 纯 rclone 命令行 + systemd/cron | [`deploy/`](deploy/) |
 
-## 构建（需自带 rclone）
+两者底层都是 **rclone bisync**，目录约定一致。
+
+## Windows 桌面端（ui/）
+
+双击 `OpenListSync.exe` → 右下角托盘图标 + 自动打开面板 `http://127.0.0.1:5399/`，无黑色命令行窗口，单实例。
+
+- 多个本地文件夹，各自同步到 `网盘目录/agents-sy/<文件夹名>`
+- 系统文件夹对话框选目录（含 DPI 感知）；选完**自动在网盘建好目录**
+- 每个文件夹根可放 `.nosy`（gitignore 语法）过滤
+- 本地删除 → 网盘删除并归档到 `agents-sy/.trash/<文件夹名>/`
+- 自包含：自带 `rclone/rclone.exe`，无需另装
+
+详见 [ui/README.md](ui/README.md)。
+
+## Linux 服务器端（deploy/）
+
+无图形界面的服务器上，用命令行 + systemd timer（或 cron）定期双向同步：
 
 ```bash
-# 把 rclone.exe 放到 ui/rclone/rclone.exe（工具会优先使用它，免额外安装）
-cd ui
-go build -trimpath -ldflags "-s -w -H windowsgui" -o openlist-sync-ui.exe .
-go test ./...
+sudo ./deploy/install-linux-systemd.sh   # 装 rclone、建目录、注册 systemd timer（每 30 分钟）
+# 或参考 deploy/crontab.example 用 cron
 ```
 
-## 使用
+核心脚本 `deploy/openlist-bisync.sh` 支持 `sync | dry-run | resync | status`。
+弱网下 bisync 不稳时，用 `deploy/openlist-fallback.sh`（单向 sync + copy 预取）。
+配置模板见 `deploy/rclone.conf.example`。
 
-1. 填网盘地址/账号/密码，「网盘目录」选上一级（如 `/ty2`），系统自动在其下建 `agents-sy`
-2. 「+ 添加一行 / 多选添加」用**系统文件夹对话框**选本地文件夹 → 自动同步到 `agents-sy/<文件夹名>`
-3. 左侧「自动同步」设间隔/开关 → 保存，即按间隔自动双向同步
+## 目录约定（两端一致）
 
-## 约定
+```
+本地/服务器工作区  →  openlist:/ty2/agents-sy/<文件夹名>
+删除归档          →  openlist:/ty2/agents-sy/.trash/<文件夹名>/
+```
 
 - 一个本地文件夹 = `agents-sy/` 下一个同名子目录
-- 本地删除 → 远端删除，归档到 `agents-sy/.trash/<文件夹名>/`（各自独立）
-- 每个文件夹根可放 `.nosy`（gitignore 语法）过滤不参与同步的内容
-- 比较方式 `size-only`（本服务端无哈希、时间不可靠）
+- 垃圾桶在同步目标**之外**（各自独立），不参与同步、不被二次清理
+- 比较方式 **size-only**（服务端无哈希、时间不可靠）；**大小不变仅改内容检测不到**
+- 不引入 Git / 锁服务 / 重型协作平台
 
-> 本仓库不含 `config.json`（含密码）、`rclone.exe`、运行日志等。
+## 文档
+
+- [docs/产品介绍.md](docs/产品介绍.md) —— 产品定位、核心设计、适用场景\n- [ui/README.md](ui/README.md) —— Windows 桌面端：使用、配置位置、构建、源码结构
+- [docs/验证清单.md](docs/验证清单.md) —— 上传前必做的核对步骤
+- [docs/弱网调参.md](docs/弱网调参.md) —— 重试/超时/并发参数
+- [docs/备选方案.md](docs/备选方案.md) —— bisync 不稳时的单向方案
+
+## 仓库结构
+
+```
+ui/       Windows 桌面应用（Go）
+deploy/   Linux 服务器部署（rclone + systemd/cron）
+docs/     文档
+```
+
+## 说明
+
+- 本仓库**不含**：`OpenListSync.exe`、`rclone.exe`、`config.json`（含密码）、运行日志等（见 `.gitignore`）。
+- 分发包由 `ui/` 构建产出，放 `dist/`，不入库。
+
+## License
+
+[MIT](LICENSE) © HTryone
+
+

@@ -10,7 +10,7 @@ rclone version | head -n1        # 验证 >= 1.66
 
 # ---------- 1. 目录骨架 ----------
 # 本地：只放工作文件；本地垃圾桶在同步源之外
-sudo mkdir -p /work/workspace /work/_trash_local /work/.bisync-state /var/log
+sudo mkdir -p /work/workspace /work/.trash_local /work/.bisync-state /var/log
 # OpenList 远端（用 WebDAV 客户端或 OpenList 后台创建）：
 #   /backup/workspace   ← 同步目标
 #   /trash/workspace    ← 垃圾桶，必须与 /backup/workspace 同级、在目标之外
@@ -22,12 +22,11 @@ cp rclone.conf.example ~/.config/rclone/rclone.conf
 chmod 600 ~/.config/rclone/rclone.conf
 # 改 url / user / pass（pass 用：rclone obscure '明文'）
 rclone lsd openlist:                 # 验证连通
-rclone lsd openlist:/backup
 rclone lsd openlist:/trash
 
 # ---------- 3. 确认 checksum 是否原生可用 ----------
 rclone backend features openlist: | grep -i -A2 hash || true
-# 或：放一个文件后  rclone hashsum md5 openlist:/backup/workspace/somefile
+# 或：放一个文件后  rclone hashsum md5 openlist:/ty2/agents-sy/workspace/somefile
 # 有哈希 -> --checksum 全量生效；无哈希 -> 见 docs/弱网调参.md 的说明
 
 # ---------- 4. 部署同步脚本 ----------
@@ -49,9 +48,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment=OPENLIST_BISYNC_LOCAL=/work/workspace
-Environment=OPENLIST_BISYNC_REMOTE=openlist:/backup/workspace
-Environment=OPENLIST_BISYNC_TRASH_LOCAL=/work/_trash_local
-Environment=OPENLIST_BISYNC_TRASH_REMOTE=openlist:/trash/workspace
+Environment=OPENLIST_BISYNC_REMOTE=openlist:/ty2/agents-sy/workspace
+Environment=OPENLIST_BISYNC_TRASH_LOCAL=/work/.trash_local
+Environment=OPENLIST_BISYNC_TRASH_REMOTE=openlist:/ty2/agents-sy/.trash/workspace
 Environment=OPENLIST_BISYNC_WORKDIR=/work/.bisync-state
 Environment=OPENLIST_BISYNC_LOG=/var/log/openlist-bisync.log
 ExecStart=/usr/local/bin/openlist-bisync.sh sync
@@ -80,3 +79,5 @@ systemctl list-timers openlist-bisync.timer       # 验证下次触发时间
 sudo systemctl start openlist-bisync.service      # 手动跑一次
 sudo journalctl -u openlist-bisync -n 40 --no-pager
 tail -n 40 /var/log/openlist-bisync.log           # 验证 "Bisync successful"
+
+

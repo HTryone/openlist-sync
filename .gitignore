@@ -3,6 +3,9 @@
 *.exe~
 ui/rclone/
 
+# 分发包（由 ui/ 生成，不重复入库；rclone/exe 都是二进制）
+dist/
+
 # 运行期数据（配置含密码、日志、状态、垃圾桶）
 ui/config.json
 ui/rclone.conf
@@ -13,8 +16,8 @@ ui/jobs/
 ui/trash/
 ui/screenshot.png
 
-# 临时/验证
-_validate/
+# 临时脚本 / 验证产物（不入库）
+.tmp/
 _*.ps1
 *.tmp
 *.log

@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -60,6 +61,15 @@ type Globals struct {
 	RemoteBase       string `json:"remoteBase"`       // 用户在网盘选的"上一级"目录，如 /ty2
 	RemoteFolderName string `json:"remoteFolderName"` // 系统自动创建的固定子目录名，默认 agents-sy
 	AutoEnabled      bool   `json:"autoEnabled"`      // 是否开启内置自动同步
+	// 挂载配置（面板可控；含"开机自动挂载"）
+	MountAuto         bool   `json:"mountAuto"`         // 程序启动时自动挂载（需先测试连接通过）
+	MountAutoDisk     string `json:"mountAutoDisk"`     // 自动挂载用的盘符
+	MountPlayMode     bool   `json:"mountPlayMode"`     // 播放模式：大预读+长缓存，为在线播放大视频优化
+	MountBufferMB     int    `json:"mountBufferMB"`     // 预读缓冲（MB）
+	MountDirCacheSec  int    `json:"mountDirCacheSec"`  // 目录缓存时间（秒）
+	MountCacheDir     string `json:"mountCacheDir"`     // VFS 缓存目录（空=默认临时目录）
+	MountCacheKeepSec int    `json:"mountCacheKeepSec"` // 缓存保留时长（秒），超时自动清理
+	MountCacheMaxGB   int    `json:"mountCacheMaxGB"`   // 缓存目录上限（GB），超过自动清最久未访问
 }
 
 type Config struct {
@@ -93,11 +103,19 @@ type App struct {
 
 func main() {
 	initDPIAwareness()
+	initJobObject() // 子进程(挂载)随主程序退出而终止，防死链
 	addr := flag.String("addr", "127.0.0.1:5399", "监听地址")
 	runMode := flag.Bool("run", false, "无界面执行一次全部启用目录的同步后退出（供计划任务调用）")
 	flag.Parse()
 	base := mustExeDir()
 	app := &App{base: base, confPath: filepath.Join(base, "config.json"), rcloneLog: filepath.Join(base, "rclone.log"), running: map[string]bool{}}
+
+	// 单实例锁：已在运行则只打开面板、不启动第二个
+	if !*runMode && !acquireSingleInstance(`Local\OpenListSync_SingleInstance`) {
+		openPath("http://" + *addr + "/")
+		return
+	}
+
 	app.conf = defaultConfig()
 	if b, err := os.ReadFile(app.confPath); err == nil {
 		_ = json.Unmarshal(b, &app.conf)
@@ -138,6 +156,14 @@ func main() {
 	if os.Getenv("OPENLIST_NO_SCHED") != "1" {
 		app.startScheduler()
 	}
+	// 自动挂载：配置了 mountAuto 则启动时先测连通、再挂网盘为盘符（异步，不阻塞启动）。
+	// 等待 10s+：给 OpenList 等外部 WebDAV 服务留出启动时间
+	if os.Getenv("OPENLIST_NO_MOUNT") != "1" {
+		go func() {
+			time.Sleep(10 * time.Second)
+			app.autoMountOnStart()
+		}()
+	}
 	// 像软件一样：启动后自动打开面板页面
 	if os.Getenv("OPENLIST_NO_BROWSER") != "1" {
 		go func() {
@@ -171,10 +197,13 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("/api/config", a.handleConfig)
 	mux.HandleFunc("/api/job", a.handleJob)
 	mux.HandleFunc("/api/pickdirs", a.handlePickDirs)
+	mux.HandleFunc("/api/prepare", a.handlePrepare)
 	mux.HandleFunc("/api/local/list", a.handleLocalList)
 	mux.HandleFunc("/api/remote/list", a.handleRemoteList)
 	mux.HandleFunc("/api/nosy", a.handleNosy)
 	mux.HandleFunc("/api/test", a.handleTest)
+	mux.HandleFunc("/api/mount", a.handleMount)
+	mux.HandleFunc("/api/pull", a.handlePull)
 	mux.HandleFunc("/api/action", a.handleAction)
 	mux.HandleFunc("/api/running", a.handleRunning)
 	mux.HandleFunc("/api/log", a.handleLog)
@@ -337,7 +366,10 @@ func hardenJob(j Job) Job {
 		j.ID = newID()
 	}
 	if j.Name == "" {
-		j.Name = filepath.Base(filepath.ToSlash(strings.TrimPrefix(j.LocalDir, `\`)))
+		j.Name = filepath.Base(filepath.Clean(j.LocalDir))
+		if j.Name == "" || j.Name == "." || j.Name == `\` {
+			j.Name = ""
+		}
 	}
 	j.LocalDir = strings.TrimSpace(j.LocalDir)
 	j.RemoteDir = strings.TrimSpace(j.RemoteDir)
@@ -414,6 +446,13 @@ func (a *App) displayRemote(p string) string {
 // prepJob 补齐派生路径。一个本地文件夹 → 「系统总目录/<文件夹名>」。
 func (a *App) prepJob(j Job) Job {
 	j = hardenJob(j)
+	// 尚未选择本地文件夹：不臆造任何网盘目标，保持为空，等选好后再派生
+	if strings.TrimSpace(j.LocalDir) == "" {
+		j.RemoteDir = ""
+		j.RemoteTrashDir = ""
+		j.AutoRemote = true
+		return j
+	}
 	name := filepath.Base(filepath.Clean(j.LocalDir))
 	if name == "" || name == "." || name == `\` {
 		name = j.Name
@@ -441,6 +480,10 @@ func (a *App) prepJob(j Job) Job {
 
 // tagAuto 在保存单个任务前判定其目标是否等于"自动值"，据此设置 AutoRemote
 func (a *App) tagAuto(j Job) Job {
+	if strings.TrimSpace(j.LocalDir) == "" {
+		j.AutoRemote = true
+		return j
+	}
 	name := filepath.Base(filepath.Clean(j.LocalDir))
 	if name == "" || name == "." || name == `\` {
 		name = j.Name
@@ -871,6 +914,34 @@ func (a *App) handlePickDirs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "paths": paths})
 }
 
+// handlePrepare 在网盘上创建所选任务的目标目录与垃圾桶目录（选完本地文件夹后自动调用）
+func (a *App) handlePrepare(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if _, err := a.ownRcloneConf(); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	created, failed := 0, 0
+	for _, id := range req.IDs {
+		j := a.job(id)
+		if j == nil || strings.TrimSpace(j.RemoteDir) == "" {
+			continue
+		}
+		if _, e := a.rclone("mkdir", j.RemoteDir); e == nil {
+			created++
+		} else {
+			failed++
+		}
+		if j.RemoteTrashDir != "" {
+			_, _ = a.rclone("mkdir", j.RemoteTrashDir)
+		}
+	}
+	writeJSON(w, map[string]any{"ok": failed == 0, "created": created, "failed": failed})
+}
+
 // .nosy 过滤规则：GET 读取，POST 写入到该任务本地根目录下
 func (a *App) handleNosy(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("jobId")
@@ -1103,6 +1174,380 @@ func (a *App) startScheduler() {
 func (a *App) handleTask(w http.ResponseWriter, r *http.Request) {
 	// 已移除 Windows 计划任务：自动同步由程序内置计时负责，故此接口不再使用
 	httpErr(w, 410, "计划任务已移除，自动同步由程序内置计时负责")
+}
+
+// ---------- 网盘挂载（rclone mount，需 WinFsp） ----------
+
+type mountStateT struct {
+	mu   sync.Mutex
+	disk string // 当前挂载盘符，空=未挂载
+	cmd  *exec.Cmd
+}
+
+var mountState = mountStateT{}
+
+// winFspInstalled 检测 WinFsp 驱动（rclone mount 必需）
+func winFspInstalled() bool {
+	for _, p := range []string{
+		os.Getenv("ProgramFiles") + `\WinFsp`,
+		os.Getenv("ProgramFiles(x86)") + `\WinFsp`,
+	} {
+		if st, e := os.Stat(p); e == nil && st.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// handleMount GET=状态 POST action=mount|unmount
+func (a *App) handleMount(w http.ResponseWriter, r *http.Request) {
+	mountState.mu.Lock()
+	defer mountState.mu.Unlock()
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]any{
+			"mounted":   mountState.disk != "",
+			"disk":      mountState.disk,
+			"winfsp":    winFspInstalled(),
+			"hasConf":   fileExists(filepath.Join(a.base, "rclone.conf")),
+			"autoMount": a.conf.Globals.MountAuto,
+			"autoDisk":  orDefault(a.conf.Globals.MountAutoDisk, "Z"),
+		})
+		return
+	}
+	var req struct {
+		Action string `json:"action"` // mount | unmount
+		Disk   string `json:"disk"`   // 盘符，如 Z
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	if req.Action == "unmount" {
+		a.doUnmount()
+		// 只卸载，不改自动挂载开关（开关由面板挂载参数控制）
+		writeJSON(w, map[string]any{"ok": true, "mounted": false})
+		return
+	}
+	// mount
+	if mountState.disk != "" {
+		httpErr(w, 409, "已挂载到 "+mountState.disk+":，请先卸载")
+		return
+	}
+	if !winFspInstalled() {
+		httpErr(w, 400, "未安装 WinFsp 驱动：请先到 https://winfsp.dev/ 下载安装 WinFsp，然后重试")
+		return
+	}
+	// 挂载前先测 WebDAV 连通性：连不通就不挂
+	if _, err := a.ownRcloneConf(); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	if _, err := a.rclone("lsd", orDefault(a.conf.Globals.Remote, "openlist")+":"); err != nil {
+		httpErr(w, 400, "WebDAV 连不上，不能挂载：请先检查地址/账号/密码并测试连接")
+		return
+	}
+	disk := strings.ToUpper(strings.TrimSpace(strings.TrimRight(req.Disk, ":")))
+	if disk == "" {
+		disk = "Z"
+	}
+	if len(disk) != 1 || disk[0] < 'A' || disk[0] > 'Z' {
+		httpErr(w, 400, "盘符无效: "+disk)
+		return
+	}
+	// 挂载整个 WebDAV 为盘符根（用户要求：整个网盘挂进来，不是单个文件夹）
+	remote := orDefault(a.conf.Globals.Remote, "openlist")
+	target := remote + ":"
+	// 盘符占用检查
+	diskPath := disk + `:\`
+	if _, e := os.Stat(diskPath); e == nil {
+		httpErr(w, 409, disk+": 盘符已被占用，请换一个")
+		return
+	}
+	confPath := filepath.Join(a.base, "rclone.conf")
+	g := a.conf.Globals
+	// 激进预取方案（实测：起播/拖动 0.1s 内，因为 chunk 预取把整段拉进本地缓存）
+	bufferMB := g.MountBufferMB
+	if bufferMB <= 0 {
+		bufferMB = 256
+	}
+	dirCache := g.MountDirCacheSec
+	if dirCache <= 0 {
+		dirCache = 600
+	}
+	if g.MountPlayMode {
+		if bufferMB < 64 {
+			bufferMB = 256
+		}
+		if dirCache < 60 {
+			dirCache = 600
+		}
+	}
+	// full 缓存 + 大分块预取 → 起播/拖动进度条命中缓存（0.1s）；no-modtime 枚举提速数倍
+	args := []string{"mount", target, disk + ":",
+		"--config", confPath,
+		"--vfs-cache-mode", "full",
+		"--vfs-read-chunk-size", "32M",
+		"--vfs-read-chunk-size-limit", "512M",
+		"--buffer-size", strconv.Itoa(bufferMB) + "M",
+		"--vfs-read-ahead", "512M",
+		"--dir-cache-time", strconv.Itoa(dirCache) + "s",
+		"--vfs-cache-poll-interval", "10s",
+		"--no-modtime",
+		"--links",
+		"--transfers", "16",
+		"--multi-thread-streams", "16",
+		"--timeout", "5m",
+		"--contimeout", "90s",
+		"--network-mode",
+		"--log-file", a.rcloneLog, "--log-level", "INFO",
+	}
+	// 缓存自动清理：rclone 原生机制——超过保留时长的文件块在下次 poll 时自动删除
+	if s := g.MountCacheKeepSec; s > 0 {
+		args = append(args, "--vfs-cache-max-age", strconv.Itoa(s)+"s")
+	}
+	if gb := g.MountCacheMaxGB; gb > 0 {
+		args = append(args, "--vfs-cache-max-size", strconv.Itoa(gb)+"G")
+	}
+	if strings.TrimSpace(g.MountCacheDir) != "" {
+		_ = os.MkdirAll(g.MountCacheDir, 0o755)
+		args = append(args, "--cache-dir", g.MountCacheDir)
+	}
+	cmd := exec.Command(a.rcloneBin(), args...)
+	// 独立进程组 + 隐藏窗口：便于退出时投递 CTRL_BREAK 让 rclone mount 安全卸载
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000 | 0x00000200, // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+	}
+	if err := cmd.Start(); err != nil {
+		httpErr(w, 500, "挂载启动失败: "+err.Error())
+		return
+	}
+	mountState.cmd = cmd
+	mountState.disk = disk
+	// 等盘符出现（最多 20s）
+	ok := false
+	for i := 0; i < 20; i++ {
+		time.Sleep(time.Second)
+		if _, e := os.Stat(diskPath); e == nil {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		a.doUnmount()
+		httpErr(w, 500, "挂载超时：盘符未出现（查看 rclone.log）")
+		return
+	}
+	// 挂载成功：记住盘符并启用自动挂载（配置文件可再改）
+	a.mu.Lock()
+	a.conf.Globals.MountAuto = true
+	a.conf.Globals.MountAutoDisk = disk
+	a.mu.Unlock()
+	_ = a.saveConf()
+	writeJSON(w, map[string]any{"ok": true, "mounted": true, "disk": disk, "target": target})
+}
+
+func (a *App) doUnmount() {
+	if mountState.cmd != nil && mountState.cmd.Process != nil {
+		// rclone mount 收到优雅终止信号时会自动卸载 FUSE 盘符（Kill 会留下死链）
+		sendGracefulTerminate(mountState.cmd.Process)
+	}
+	mountState.cmd = nil
+	mountState.disk = ""
+}
+
+// autoMountOnStart 程序启动 10 秒后按配置自动挂载：
+// 先测 WebDAV 连通（OpenList 可能还没起来），通过才挂；失败不重试（用户可在面板手动挂）
+func (a *App) autoMountOnStart() {
+	if !a.conf.Globals.MountAuto {
+		return
+	}
+	mountState.mu.Lock()
+	defer mountState.mu.Unlock()
+	if mountState.disk != "" {
+		return // 已挂载
+	}
+	if !winFspInstalled() {
+		log.Println("自动挂载跳过：未安装 WinFsp")
+		return
+	}
+	// 连通性测试
+	if _, err := a.rclone("lsd", orDefault(a.conf.Globals.Remote, "openlist")+":"); err != nil {
+		log.Println("自动挂载跳过：WebDAV 连不通（服务可能未启动）")
+		return
+	}
+	disk := strings.ToUpper(strings.TrimSpace(a.conf.Globals.MountAutoDisk))
+	if disk == "" {
+		disk = "Z"
+	}
+	diskPath := disk + `:\`
+	if _, e := os.Stat(diskPath); e == nil {
+		log.Println("自动挂载跳过：盘符被占用 " + disk)
+		return
+	}
+	remote := orDefault(a.conf.Globals.Remote, "openlist")
+	confPath := filepath.Join(a.base, "rclone.conf")
+	g := a.conf.Globals
+	bufferMB := g.MountBufferMB
+	if bufferMB <= 0 {
+		bufferMB = 256
+	}
+	dirCache := g.MountDirCacheSec
+	if dirCache <= 0 {
+		dirCache = 600
+	}
+	if g.MountPlayMode {
+		if bufferMB < 64 {
+			bufferMB = 256
+		}
+		if dirCache < 60 {
+			dirCache = 300
+		}
+	}
+	args := []string{"mount", remote + ":", disk + ":",
+		"--config", confPath,
+		"--vfs-cache-mode", "full",
+		"--vfs-read-chunk-size", "32M",
+		"--vfs-read-chunk-size-limit", "512M",
+		"--buffer-size", strconv.Itoa(bufferMB) + "M",
+		"--vfs-read-ahead", "512M",
+		"--dir-cache-time", strconv.Itoa(dirCache) + "s",
+		"--vfs-cache-poll-interval", "10s",
+		"--no-modtime", "--links",
+		"--transfers", "16", "--multi-thread-streams", "16",
+		"--timeout", "5m", "--contimeout", "90s",
+		"--network-mode",
+		"--log-file", a.rcloneLog, "--log-level", "INFO",
+	}
+	// 缓存自动清理（rclone 原生）：max-age 按时长清、max-size 按容量上限清（清最久未访问）
+	if s := g.MountCacheKeepSec; s > 0 {
+		args = append(args, "--vfs-cache-max-age", strconv.Itoa(s)+"s")
+	}
+	if gb := g.MountCacheMaxGB; gb > 0 {
+		args = append(args, "--vfs-cache-max-size", strconv.Itoa(gb)+"G")
+	}
+	if strings.TrimSpace(g.MountCacheDir) != "" {
+		_ = os.MkdirAll(g.MountCacheDir, 0o755)
+		args = append(args, "--cache-dir", g.MountCacheDir)
+	}
+	cmd := exec.Command(a.rcloneBin(), args...)
+	hideWindow(cmd)
+	if err := cmd.Start(); err != nil {
+		log.Println("自动挂载失败: " + err.Error())
+		return
+	}
+	mountState.cmd = cmd
+	mountState.disk = disk
+	log.Println("自动挂载完成: " + disk + ": -> " + remote + ":")
+}
+
+// ---------- 从网盘拉取（显式 pull：远端新增/更新 -> 本地，不删本地） ----------
+
+// handlePull POST {jobId}：对指定（或全部启用）任务执行 rclone copy 远端->本地（只增不删）
+func (a *App) handlePull(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpErr(w, 405, "method not allowed")
+		return
+	}
+	var req struct {
+		JobID string `json:"jobId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if _, err := a.ownRcloneConf(); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	var targets []Job
+	if req.JobID != "" {
+		j := a.job(req.JobID)
+		if j == nil {
+			httpErr(w, 404, "任务不存在")
+			return
+		}
+		targets = []Job{*j}
+	} else {
+		for _, j := range a.conf.Jobs {
+			if j.Enabled {
+				targets = append(targets, j)
+			}
+		}
+	}
+	if len(targets) == 0 {
+		httpErr(w, 400, "没有启用的目录任务")
+		return
+	}
+
+	a.mu.Lock()
+	for _, j := range targets {
+		if a.running[j.ID] {
+			a.mu.Unlock()
+			httpErr(w, 409, j.Name+" 正在同步中，请稍候")
+			return
+		}
+	}
+	for _, j := range targets {
+		a.running[j.ID] = true
+	}
+	a.mu.Unlock()
+
+	go func(js []Job) {
+		defer func() {
+			a.mu.Lock()
+			for _, j := range js {
+				delete(a.running, j.ID)
+			}
+			a.mu.Unlock()
+		}()
+		for _, j := range js {
+			jj := j
+			a.pullJob(jj)
+		}
+	}(targets)
+
+	names := []string{}
+	for _, j := range targets {
+		names = append(names, j.Name)
+	}
+	writeJSON(w, map[string]any{"ok": true, "message": "正在从网盘拉取：" + strings.Join(names, "、")})
+}
+
+// pullJob 远端 -> 本地单向增量（copy：只新增/更新，不删本地；跳过本地已有同尺寸文件）
+func (a *App) pullJob(j Job) {
+	if _, err := a.ownRcloneConf(); err != nil {
+		return
+	}
+	_ = os.MkdirAll(a.stateDir(j), 0o755)
+	_ = os.MkdirAll(filepath.Dir(a.jobLog(j)), 0o755)
+	logPath := a.jobLog(j)
+	if f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); e == nil {
+		fmt.Fprintf(f, "\n===== [%s] %s 从网盘拉取开始 =====\n", time.Now().Format("2006-01-02 15:04:05"), j.Name)
+		f.Close()
+	}
+	args := []string{"copy", j.RemoteDir, j.LocalDir,
+		"--config", filepath.Join(a.base, "rclone.conf"),
+		"--size-only",
+		"--transfers", strconv.Itoa(a.conf.Globals.Transfers),
+		"--checkers", strconv.Itoa(a.conf.Globals.Checkers),
+		"--retries", strconv.Itoa(a.conf.Globals.Retries),
+		"--low-level-retries", strconv.Itoa(a.conf.Globals.LowLevelRetries),
+		"--contimeout", orDefault(a.conf.Globals.Contimeout, "30s"),
+		"--timeout", orDefault(a.conf.Globals.TimeoutStr, "5m"),
+		"--log-file", logPath, "--log-level", "INFO",
+	}
+	if fp := a.filterFor(j); fp != "" {
+		args = append(args, "--filter-from", fp)
+	}
+	cmd := exec.Command(a.rcloneBin(), args...)
+	hideWindow(cmd)
+	_, _ = cmd.CombinedOutput()
+	if f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); e == nil {
+		fmt.Fprintf(f, "===== [%s] 从网盘拉取结束 =====\n", j.Name)
+		f.Close()
+	}
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
 
 func (a *App) handleLog(w http.ResponseWriter, r *http.Request) {

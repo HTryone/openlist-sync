@@ -1,0 +1,27 @@
+# 过滤规则（.nosy，gitignore 语法）
+# 作用：排除不想同步进网盘的内容。改完在面板点「保存到文件夹」。
+# .nosy 本身不参与同步。
+
+# ---- Git / 版本控制 ----
+.git/
+.gitignore
+
+# ---- Go 构建产物 ----
+*.exe
+*.exe~
+*.test
+
+# ---- 运行期数据（含密码/状态/日志，绝不入网盘）----
+config.json
+rclone.conf
+rclone.log
+logs/
+state/
+jobs/
+trash/
+cache/
+
+# ---- 系统垃圾 ----
+Thumbs.db
+desktop.ini
+.DS_Store

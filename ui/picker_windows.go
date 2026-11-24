@@ -99,6 +99,9 @@ public static class FolderPicker
     const uint FOS_PATHMUSTEXIST = 0x800;
     const uint SIGDN_FILESYSPATH = 0x80058000;
 
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+
     public static string CompileCheck()
     {
         var dlg = (IFileOpenDialog)new FileOpenDialogRCW();
@@ -113,7 +116,10 @@ public static class FolderPicker
         uint opts; dlg.GetOptions(out opts);
         dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_ALLOWMULTISELECT | FOS_PATHMUSTEXIST);
         dlg.SetTitle("选择要同步的文件夹（按住 Ctrl 可一次多选）");
-        int hr = dlg.Show(IntPtr.Zero);
+        // 用当前前台窗口(浏览器)作为 owner，并前置，避免对话框弹到后台
+        IntPtr owner = GetForegroundWindow();
+        if (owner != IntPtr.Zero) SetForegroundWindow(owner);
+        int hr = dlg.Show(owner);
         if (hr != 0) return new string[0];
         IntPtr ppenum;
         dlg.GetResults(out ppenum);
@@ -175,6 +181,11 @@ func runPicker(mode string) (string, error) {
 }
 
 func pickDirectories() ([]string, error) {
+	// 首选：进程内 COM 对话框（任务栏是本程序图标、DPI 本进程负责、弹前台）
+	if paths, err := comPickFolders(); err == nil {
+		return paths, nil
+	}
+	// 兜底：PowerShell 子进程
 	out, err := runPicker("")
 	if err != nil && strings.TrimSpace(out) == "" {
 		return nil, err

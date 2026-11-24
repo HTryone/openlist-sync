@@ -11,8 +11,8 @@
 #   6. 垃圾桶在同步目标之外，不下发、不被清理
 #
 # 关键：需要 --backup-dir1 + --backup-dir2 两个垃圾桶
-#   --backup-dir2 openlist:/trash/workspace  捕获「本地删除」在远端被删掉的文件
-#   --backup-dir1 /work/_trash_local         捕获「远端删除」在本地被删掉的文件
+#   --backup-dir2 <目标>/.trash/<名>  捕获「本地删除」在远端被删掉的文件
+#   --backup-dir1 <本地垃圾桶>              捕获「远端删除」在本地被删掉的文件
 #   （只给 backup-dir2 时，别的 Agent 在远端删文件，本地副本会被直接删掉、无归档）
 #
 # 用法：
@@ -25,9 +25,9 @@ set -uo pipefail
 
 # ---------- 路径（全部可用环境变量覆盖，便于测试/多实例） ----------
 LOCAL_DIR="${OPENLIST_BISYNC_LOCAL:-/work/workspace}"                 # Path1：本地工作区（只放工作文件）
-REMOTE_PATH="${OPENLIST_BISYNC_REMOTE:-openlist:/backup/workspace}"   # Path2：OpenList 同步目标
-TRASH_LOCAL="${OPENLIST_BISYNC_TRASH_LOCAL:-/work/_trash_local}"      # backup-dir1：本地垃圾桶（同步源之外）
-TRASH_REMOTE="${OPENLIST_BISYNC_TRASH_REMOTE:-openlist:/trash/workspace}" # backup-dir2：远端垃圾桶（目标之外，同级）
+REMOTE_PATH="${OPENLIST_BISYNC_REMOTE:-openlist:/ty2/agents-sy/workspace}"   # Path2：OpenList 同步目标
+TRASH_LOCAL="${OPENLIST_BISYNC_TRASH_LOCAL:-/work/.trash_local}"      # backup-dir1：本地垃圾桶（同步源之外）
+TRASH_REMOTE="${OPENLIST_BISYNC_TRASH_REMOTE:-openlist:/ty2/agents-sy/.trash/workspace}" # backup-dir2：远端垃圾桶（目标之外，同级）
 WORKDIR="${OPENLIST_BISYNC_WORKDIR:-/work/.bisync-state}"             # bisync 状态目录（本地）
 LOGFILE="${OPENLIST_BISYNC_LOG:-/var/log/openlist-bisync.log}"
 RCLONE="${RCLONE_BIN:-rclone}"
@@ -115,3 +115,5 @@ case "$MODE" in
     echo "用法: $0 [sync|dry-run|resync|status]"; exit 64
     ;;
 esac
+
+

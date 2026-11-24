@@ -133,9 +133,12 @@ func trayWndProc(hwnd syscall.Handle, msg uint32, wparam, lparam uintptr) uintpt
 			go trayApp.runAll()
 		case 3:
 			trayDelete(hwnd)
+			// 退出前：先卸载网盘挂载（否则 rclone mount 子进程会残留成死链）
+			trayApp.doUnmount()
 			pPostQuitMessage.Call(0)
 		}
 	case wmDestroy:
+		trayApp.doUnmount()
 		pPostQuitMessage.Call(0)
 	}
 	r, _, _ := pDefWindowProc.Call(uintptr(hwnd), uintptr(msg), wparam, lparam)
@@ -224,4 +227,3 @@ func trayRun(app *App, addr string, mux *http.ServeMux) bool {
 	os.Exit(0)
 	return true
 }
-

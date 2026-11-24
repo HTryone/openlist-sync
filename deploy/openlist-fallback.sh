@@ -12,7 +12,7 @@
 #   - 好处：无 resync 概念、无冲突副本、弱网下每次都是幂等的，不会把一次失败的
 #           列表当成"全删"误判（配合 --max-delete 更稳）
 #
-# 垃圾桶：写侧删除用 --backup-dir2 归档到 openlist:/trash/workspace（目标之外）
+# 垃圾桶：写侧删除用 --backup-dir 归档到 <备份目录>/.trash（目标之外）
 #
 # 用法：
 #   ./openlist-fallback.sh           # 一次「推 + 拉」全流程
@@ -22,8 +22,8 @@
 set -uo pipefail
 
 LOCAL_DIR="${OPENLIST_FB_LOCAL:-/work/workspace}"
-REMOTE_PATH="${OPENLIST_FB_REMOTE:-openlist:/backup/workspace}"
-TRASH_REMOTE="${OPENLIST_FB_TRASH:-openlist:/trash/workspace}"
+REMOTE_PATH="${OPENLIST_FB_REMOTE:-openlist:/ty2/agents-sy/workspace}"
+TRASH_REMOTE="${OPENLIST_FB_TRASH:-openlist:/ty2/agents-sy/.trash/workspace}"
 SHARED_REMOTE="${OPENLIST_FB_SHARED:-openlist:/shared/docs}"
 CACHE_DIR="${OPENLIST_FB_CACHE:-/work/_cache/shared}"
 LOGFILE="${OPENLIST_FB_LOG:-/var/log/openlist-sync.log}"
@@ -67,3 +67,5 @@ case "$MODE" in
 esac
 if [ "$rc" -eq 0 ]; then log "OK"; else log "FAIL rc=$rc（下次重试；详见 $LOGFILE）"; fi
 exit "$rc"
+
+
