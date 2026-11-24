@@ -1,0 +1,25 @@
+# 二进制/运行产物（不入库）
+*.exe
+*.exe~
+ui/rclone/
+
+# 运行期数据（配置含密码、日志、状态、垃圾桶）
+ui/config.json
+ui/rclone.conf
+ui/rclone.log
+ui/logs/
+ui/state/
+ui/jobs/
+ui/trash/
+ui/screenshot.png
+
+# 临时/验证
+_validate/
+_*.ps1
+*.tmp
+*.log
+
+# 系统
+desktop.ini
+Thumbs.db
+.DS_Store

@@ -1,0 +1,8 @@
+# /etc/cron.d/openlist-bisync   —— 若不用 systemd timer，用 cron 的版本
+# 每 30 分钟双向同步一次；弱网可改 0,30 -> 0（每小时）或夜间集中。
+# 注意：cron 环境 PATH 很短，rclone 必须用绝对路径。
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+# 分 时 日 月 周   用户   命令
+*/30 * * * *  root  /usr/local/bin/openlist-bisync.sh sync >> /var/log/openlist-bisync.cron.log 2>&1

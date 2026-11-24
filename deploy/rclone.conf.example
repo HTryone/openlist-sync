@@ -1,0 +1,29 @@
+# rclone 远端配置模板 —— OpenList (WebDAV)
+# 复制为:  ~/.config/rclone/rclone.conf   (Linux)
+#          %APPDATA%\rclone\rclone.conf   (Windows)
+# 权限:    chmod 600（含明文密码）
+#
+# 说明：
+#  - OpenList 的 WebDAV 地址通常是  http://<host>:<port>/dav
+#  - vendor 用 "other"（OpenList/AList 兼容层）
+#  - user/pass 填 OpenList 账号；该账号需具备对应目录的 WebDAV 读/写权限
+#  - 建议为同步单独建一个 OpenList 用户，只授权 /backup、/trash 两个目录，
+#    不要用 admin（admin 默认可能未开 WebDAV 写权限）
+
+[openlist]
+type = webdav
+url = http://127.0.0.1:5244/dav
+vendor = other
+user = sync-bot
+pass = REPLACE_WITH_OBSCURED_PASSWORD
+
+# 弱网：整体超时与连接池
+timeout = 5m
+contimeout = 30s
+
+# 若 WebDAV 服务端支持并暴露 checksums（较新 OpenList/AList 会返回 oc:checksums），
+# --checksum 可直接按内容哈希比较；不支持时会退化为 size+modtime。
+# 可用 `rclone backend features openlist:` 或 `rclone hashsum md5 openlist:path` 验证。
+#
+# 密码请用 obscured 形式：  rclone obscure '明文密码'
+# 然后把上面 pass 换成 obscure 输出。
