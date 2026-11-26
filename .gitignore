@@ -1,21 +1,21 @@
 # 二进制/运行产物（不入库）
 *.exe
 *.exe~
-ui/rclone/
+engine/rclone/
 
-# 分发包（由 ui/ 生成，不重复入库；rclone/exe 都是二进制）
+# 分发包（由 engine/ 构建产出，不重复入库；rclone/exe 都是二进制）
 dist/
 
 # 运行期数据（配置含密码、日志、状态、垃圾桶）
-ui/config.json
-ui/rclone.conf
-ui/rclone.log
-ui/logs/
-ui/state/
-ui/jobs/
-ui/trash/
-ui/recycle/
-ui/screenshot.png
+engine/config.json
+engine/rclone.conf
+engine/rclone.log
+engine/logs/
+engine/state/
+engine/jobs/
+engine/trash/
+engine/recycle/
+engine/screenshot.png
 # merged desktop project build outputs / installed deps
 desktop/node_modules/
 desktop/dist/

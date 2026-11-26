@@ -7,22 +7,22 @@
 
 | 场景 | 方案 | 入口 |
 |---|---|---|
-| **Windows 桌面（推荐日常用）** | 图形面板 + 系统托盘 + 内置定时同步 | [`ui/`](ui/README.md) → 分发包 [`dist/`](ui/README.md) |
+| **Windows 桌面（推荐日常用）** | 图形界面（desktop/）+ headless 引擎常驻同步 | [`desktop/`](desktop/) 与 [`engine/`](engine/README.md) |
 | **Linux 服务器（无图形界面）** | 纯 rclone 命令行 + systemd/cron | [`deploy/`](deploy/) |
 
 两者底层都是 **rclone bisync**，目录约定一致。
 
-## Windows 桌面端（ui/）
+## 同步引擎（engine/）
 
-双击 `OpenListSync.exe` → 右下角托盘图标 + 自动打开面板 `http://127.0.0.1:5399/`，无黑色命令行窗口，单实例。
+纯 CLI 引擎：`OpenListSync.exe -serve` 常驻后台按间隔同步，`-run` 执行一轮后退出。桌面端（desktop/）通过 sidecar 方式调用同一引擎。
 
 - 多个本地文件夹，各自同步到 `网盘目录/agents-sy/<文件夹名>`
 - 系统文件夹对话框选目录（含 DPI 感知）；选完**自动在网盘建好目录**
 - 每个文件夹根可放 `.nosy`（gitignore 语法）过滤
 - 本地删除 → 网盘删除并归档到 `agents-sy/.trash/<文件夹名>/`
-- 自包含：自带 `rclone/rclone.exe`，无需另装
 
-详见 [ui/README.md](ui/README.md)。
+
+详见 [engine/README.md](engine/README.md)。
 
 ## Linux 服务器端（deploy/）
 
@@ -51,7 +51,7 @@ sudo ./deploy/install-linux-systemd.sh   # 装 rclone、建目录、注册 syste
 
 ## 文档
 
-- [docs/产品介绍.md](docs/产品介绍.md) —— 产品定位、核心设计、适用场景\n- [ui/README.md](ui/README.md) —— Windows 桌面端：使用、配置位置、构建、源码结构
+- [docs/产品介绍.md](docs/产品介绍.md) —— 产品定位、核心设计、适用场景\n- [engine/README.md](engine/README.md) —— headless 同步引擎：命令、数据目录、构建
 - [docs/验证清单.md](docs/验证清单.md) —— 上传前必做的核对步骤
 - [docs/弱网调参.md](docs/弱网调参.md) —— 重试/超时/并发参数
 - [docs/备选方案.md](docs/备选方案.md) —— bisync 不稳时的单向方案
@@ -66,11 +66,11 @@ OpenList Desktop 以 sidecar 方式调用本引擎：
 openlistsync -base <数据目录> -run [-job <任务ID>]
 ```
 
-这种方式保证桌面 UI 与同步引擎解耦：引擎仍由 `ui/` 中的 Go 源码构建成独立 exe，随桌面端安装包分发，而配置、日志、状态和回收站由 `-base` 指定目录隔离。
+这种方式保证桌面 UI 与同步引擎解耦：引擎仍由 `engine/` 中的 Go 源码构建成独立 exe，随桌面端安装包分发，而配置、日志、状态和回收站由 `-base` 指定目录隔离。
 ## 仓库结构
 
 ```
-ui/       Windows 桌面应用（Go）
+engine/   headless 同步引擎（Go CLI）
 deploy/   Linux 服务器部署（rclone + systemd/cron）
 docs/     文档
 THIRD-PARTY-NOTICES.md  第三方组件与许可声明（须随分发包一起分发）
@@ -79,7 +79,7 @@ THIRD-PARTY-NOTICES.md  第三方组件与许可声明（须随分发包一起�
 ## 说明
 
 - 本仓库**不含**：`OpenListSync.exe`、`rclone.exe`、`config.json`（含密码）、运行日志等（见 `.gitignore`）。
-- 分发包由 `ui/` 构建产出，放 `dist/`，不入库。
+- 分发包由 `engine/` 构建产出，放 `dist/`，不入库。
 
 ## License
 
