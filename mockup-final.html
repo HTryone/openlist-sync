@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  /* 使用项目真实 token：accent #007aff / text #1d1d1f #6e6e73 / bg2 #f5f5f7 / border rgba(0,0,0,.1) */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; background: #e9ebef; padding: 26px; display: flex; gap: 26px; align-items: flex-start; }
+
+  .col { width: 700px; }
+  .cap { font-size: 12px; font-weight: 700; color: #8b95a3; letter-spacing: .6px; margin-bottom: 10px; }
+
+  .modal { background: #fff; border-radius: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.13); overflow: hidden; }
+  .mhead { padding: 15px 20px; font-size: 16px; font-weight: 600; color: #1d1d1f; border-bottom: 1px solid #eef0f4; }
+  .sec { padding: 18px 20px 22px; }
+
+  /* ===== 大标题 Tab ===== */
+  .headtabs { display: flex; gap: 10px; margin-bottom: 18px; }
+  .ht { display: flex; align-items: center; gap: 10px; padding: 8px 18px 8px 9px; border-radius: 12px; transition: .15s; }
+  .ht .ico { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .ht .tx { font-size: 18px; font-weight: 700; }
+  .ht.off .ico { background: #dbe8fb; color: #86a9d9; }
+  .ht.off .tx { color: #9aa5b2; }
+  .ht.on { background: #eaf3ff; box-shadow: inset 0 0 0 2px #007aff; }
+  .ht.on .ico { background: #007aff; color: #fff; }
+  .ht.on .tx { color: #1d1d1f; }
+
+  /* 视频模式 */
+  .vblock { border: 1px solid rgba(0,0,0,.1); border-radius: 10px; background: #fff; padding: 13px; box-shadow: 0 1px 3px rgba(0,0,0,.05); margin-bottom: 16px; }
+  .vhead { display: flex; align-items: center; justify-content: space-between; background: #e9faee; border-radius: 8px; padding: 13px; }
+  .vhead .l { display: flex; align-items: center; gap: 11px; }
+  .vhead .t { font-size: 14px; font-weight: 700; color: #22a34a; }
+  .vhead .s { font-size: 11.5px; color: #6e6e73; margin-top: 2px; }
+  .chk { width: 22px; height: 22px; border: 2px solid #22a34a; border-radius: 6px; background: #e9faee; position: relative; flex-shrink: 0; }
+  .chk::after { content: '✓'; position: absolute; inset: 0; color: #22a34a; font-size: 14px; font-weight: 900; display: flex; align-items: center; justify: center; align-items: center; justify-content: center; }
+
+  .sv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 11px; margin-top: 13px; }
+  .svc { border: 1px solid rgba(0,0,0,.1); border-radius: 8px; background: #fafbfc; padding: 11px; }
+  .svc .r { display: flex; justify-content: space-between; align-items: baseline; }
+  .svc .n { font-size: 12.5px; font-weight: 700; color: #1d1d1f; }
+  .svc .v { font-size: 15px; font-weight: 800; color: #007aff; }
+  .svc .v small { font-size: 10.5px; color: #9aa5b2; font-weight: 500; }
+  .trk { height: 4px; background: #e5e7eb; border-radius: 2px; margin: 11px 0 7px; position: relative; }
+  .trk i { position: absolute; left: 0; top: 0; height: 100%; background: #007aff; border-radius: 2px; }
+  .trk b { position: absolute; top: -5px; width: 13px; height: 13px; background: #007aff; border: 2px solid #fff; border-radius: 50%; }
+  .svc .h { font-size: 10.5px; color: #9aa5b2; line-height: 1.35; }
+
+  /* 提示条 */
+  .tip { background: #eaf2ff; border-top: 2px solid #007aff; border-radius: 6px; text-align: center; padding: 8px; font-size: 12.5px; font-weight: 600; color: #4b5563; margin-bottom: 13px; }
+
+  /* 分类卡片 */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+  .cat { border: 1px solid rgba(0,0,0,.1); border-radius: 8px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.05); overflow: hidden; }
+  .cat h5 { background: #eef4ff; text-align: center; font-size: 12.5px; font-weight: 600; color: #374151; padding: 6px; border-bottom: 2px solid rgba(0,0,0,.1); }
+  .fl { display: flex; gap: 8px; align-items: flex-start; padding: 9px 10px; border-bottom: 1px solid #f1f3f6; }
+  .fl:last-child { border-bottom: none; }
+  .cb { width: 19px; height: 19px; border: 2px solid #d1d5db; border-radius: 5px; flex-shrink: 0; margin-top: 1px; }
+  .cb.on { border-color: #22a34a; background: #e9faee; position: relative; }
+  .cb.on::after { content: '✓'; position: absolute; inset: 0; color: #22a34a; font-size: 12px; font-weight: 900; display: flex; align-items: center; justify-content: center; }
+  .fl code { display: inline-block; background: #f3f4f6; border: 1px solid rgba(0,0,0,.1); border-radius: 5px; padding: 2px 6px; font-family: Consolas, monospace; font-size: 10.5px; font-weight: 600; color: #007aff; }
+  .fl .d { font-size: 10.5px; color: #6e6e73; margin-top: 3px; line-height: 1.3; }
+
+  /* 参数行 */
+  .addbtn { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 11px 0; border-radius: 8px; background: #007aff; color: #fff; font-size: 13.5px; font-weight: 600; margin-bottom: 13px; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .row input { flex: 1; border: 1px solid rgba(0,0,0,.1); border-radius: 8px; padding: 9px 12px; font-family: Consolas, monospace; font-size: 12px; color: #1d1d1f; background: #f5f5f7; }
+  .del { width: 36px; height: 36px; border: 1px solid rgba(0,0,0,.1); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #8b95a3; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<!-- ===== 状态 1：常用标志 ===== -->
+<div class="col">
+  <div class="cap">① 默认 —— 点「常用标志」大标题</div>
+  <div class="modal">
+    <div class="mhead">编辑远程配置</div>
+    <div class="sec">
+
+      <div class="headtabs">
+        <div class="ht on">
+          <div class="ico">⚙</div>
+          <div class="tx">常用标志</div>
+        </div>
+        <div class="ht off">
+          <div class="ico">⚙</div>
+          <div class="tx">额外标志</div>
+        </div>
+      </div>
+
+      <div class="vblock">
+        <div class="vhead">
+          <div class="l">
+            <span style="font-size:19px">🎬</span>
+            <div>
+              <div class="t">视频播放模式</div>
+              <div class="s">一键填入为在线播放大视频调校的参数</div>
+            </div>
+          </div>
+          <div class="chk"></div>
+        </div>
+        <div class="sv">
+          <div class="svc">
+            <div class="r"><span class="n">播放流畅度</span><span class="v">256<small>MB</small></span></div>
+            <div class="trk"><i style="width:25%"></i><b style="left:24%"></b></div>
+            <div class="h">越大越流畅，占内存越多</div>
+          </div>
+          <div class="svc">
+            <div class="r"><span class="n">文件夹刷新</span><span class="v">600<small>秒</small></span></div>
+            <div class="trk"><i style="width:33%"></i><b style="left:32%"></b></div>
+            <div class="h">网盘新增文件多久出现在本地</div>
+          </div>
+          <div class="svc">
+            <div class="r"><span class="n">缓存占用</span><span class="v">20<small>GB</small></span></div>
+            <div class="trk"><i style="width:12%"></i><b style="left:11%"></b></div>
+            <div class="h">最多占用的磁盘空间</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tip">点击即可立即添加或移除</div>
+      <div class="grid">
+        <div class="cat">
+          <h5>缓存</h5>
+          <div class="fl"><div class="cb on"></div><div><code>--vfs-cache-mode=full</code><div class="d">缓存文件的完整内容</div></div></div>
+          <div class="fl"><div class="cb"></div><div><code>--vfs-cache-max-age=24h</code><div class="d">缓存的最大生命周期</div></div></div>
+          <div class="fl"><div class="cb"></div><div><code>--dir-cache-time=5m</code><div class="d">缓存目录列表的时间</div></div></div>
+        </div>
+        <div class="cat">
+          <h5>性能</h5>
+          <div class="fl"><div class="cb on"></div><div><code>--buffer-size=256M</code><div class="d">更大的缓冲区以获得更好的性能</div></div></div>
+          <div class="fl"><div class="cb"></div><div><code>--transfers=4</code><div class="d">并行传输数量</div></div></div>
+        </div>
+        <div class="cat">
+          <h5>网络</h5>
+          <div class="fl"><div class="cb"></div><div><code>--timeout=5m</code><div class="d">IO 空闲超时</div></div></div>
+          <div class="fl"><div class="cb"></div><div><code>--retries=3</code><div class="d">重试操作次数</div></div></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ===== 状态 2：额外标志 ===== -->
+<div class="col">
+  <div class="cap">② 点「额外标志」大标题</div>
+  <div class="modal">
+    <div class="mhead">编辑远程配置</div>
+    <div class="sec">
+
+      <div class="headtabs">
+        <div class="ht off">
+          <div class="ico">⚙</div>
+          <div class="tx">常用标志</div>
+        </div>
+        <div class="ht on">
+          <div class="ico">⚙</div>
+          <div class="tx">额外标志</div>
+        </div>
+      </div>
+
+      <div class="addbtn">＋ 添加标志</div>
+      <div class="row"><input value="--vfs-cache-mode=full" readonly /><div class="del">×</div></div>
+      <div class="row"><input value="--buffer-size=256M" readonly /><div class="del">×</div></div>
+      <div class="row"><input value="--dir-cache-time=600s" readonly /><div class="del">×</div></div>
+      <div class="row"><input value="--vfs-cache-max-age=24h" readonly /><div class="del">×</div></div>
+      <div class="row"><input value="--vfs-cache-max-size=20G" readonly /><div class="del">×</div></div>
+      <div class="row"><input value="--vfs-read-ahead=512M" readonly /><div class="del">×</div></div>
+      <div class="row"><input value="--cache-dir=D:\OpenListCache" readonly /><div class="del">×</div></div>
+
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

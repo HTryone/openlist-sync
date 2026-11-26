@@ -96,6 +96,7 @@ type App struct {
 	confPath    string
 	conf        Config
 	rcloneLog   string
+	onlyJob     string // -job：只跑这一个任务（空=全部启用）
 	mu          sync.Mutex
 	running     map[string]bool
 	nextRunUnix atomic.Int64
@@ -106,9 +107,14 @@ func main() {
 	initJobObject() // 子进程(挂载)随主程序退出而终止，防死链
 	addr := flag.String("addr", "127.0.0.1:5399", "监听地址")
 	runMode := flag.Bool("run", false, "无界面执行一次全部启用目录的同步后退出（供计划任务调用）")
+	baseFlag := flag.String("base", "", "数据目录（config/state/logs/recycle 都放这里），默认是 exe 所在目录")
+	jobFlag := flag.String("job", "", "只执行指定任务 ID（配合 -run 使用）")
 	flag.Parse()
 	base := mustExeDir()
-	app := &App{base: base, confPath: filepath.Join(base, "config.json"), rcloneLog: filepath.Join(base, "rclone.log"), running: map[string]bool{}}
+	if strings.TrimSpace(*baseFlag) != "" {
+		base = filepath.Clean(*baseFlag)
+	}
+	app := &App{base: base, confPath: filepath.Join(base, "config.json"), rcloneLog: filepath.Join(base, "rclone.log"), running: map[string]bool{}, onlyJob: strings.TrimSpace(*jobFlag)}
 
 	// 单实例锁：已在运行则只打开面板、不启动第二个
 	if !*runMode && !acquireSingleInstance(`Local\OpenListSync_SingleInstance`) {
@@ -336,6 +342,9 @@ func (a *App) runAllCLI() {
 		if !j.Enabled {
 			continue
 		}
+		if a.onlyJob != "" && j.ID != a.onlyJob {
+			continue
+		}
 		n++
 		mode := "sync"
 		if !a.hasListings(j) {
@@ -347,6 +356,10 @@ func (a *App) runAllCLI() {
 		if err != nil {
 			rc = 1
 		}
+	}
+	if a.onlyJob != "" && n == 0 {
+		fmt.Printf("[openlist-sync] 没有找到任务 %s（或该任务已停用）\n", a.onlyJob)
+		rc = 2
 	}
 	fmt.Printf("\n[openlist-sync] 共执行 %d 个目录，退出码 %d\n", n, rc)
 	os.Exit(rc)
@@ -565,6 +578,29 @@ func (a *App) ensureDirs() {
 func (a *App) stateDir(j Job) string { return filepath.Join(a.base, "state", j.ID) }
 func (a *App) jobLog(j Job) string   { return filepath.Join(a.base, "logs", j.ID+".log") }
 
+// localTrashDir 回收站不可用时的本地留档目录（绝不静默删除）。
+func (a *App) localTrashDir(j Job) string { return filepath.Join(a.base, "trash", j.ID) }
+
+// newStageDir 本次运行的 --backup-dir1 暂存区。必须在 LocalDir 之外，
+// 否则暂存区会被当成待同步文件；LocalDir 与程序目录互相包含时直接跳过（退回旧的硬删除）。
+func (a *App) newStageDir(j Job) string {
+	root := filepath.Join(a.base, "recycle")
+	if pathOverlaps(root, j.LocalDir) {
+		return ""
+	}
+	return filepath.Join(root, j.ID, time.Now().Format("20060102-150405.000000"))
+}
+
+// pathOverlaps 判断两个目录相同或互为父子（Windows 路径不区分大小写）。
+func pathOverlaps(a, b string) bool {
+	a, b = strings.ToLower(filepath.Clean(a)), strings.ToLower(filepath.Clean(b))
+	if a == "" || b == "" || a == "." || b == "." {
+		return true
+	}
+	sep := string(filepath.Separator)
+	return a == b || strings.HasPrefix(a, b+sep) || strings.HasPrefix(b, a+sep)
+}
+
 func orDefault(s, d string) string {
 	if strings.TrimSpace(s) == "" {
 		return d
@@ -629,8 +665,9 @@ func (a *App) rclone(args ...string) (string, error) {
 	return string(out), err
 }
 
-// 为某任务构造 bisync 参数
-func (a *App) bisyncArgs(j Job, mode, filterPath string) []string {
+// 为某任务构造 bisync 参数。stageDir 非空时作为 --backup-dir1：
+// 网盘侧删除的本地文件先移进暂存区，跑完再由 stageAndRecycle 还原并送系统回收站。
+func (a *App) bisyncArgs(j Job, mode, filterPath, stageDir string) []string {
 	g := a.conf.Globals
 	args := []string{"bisync", j.LocalDir, j.RemoteDir,
 		"--config", filepath.Join(a.base, "rclone.conf"),
@@ -646,6 +683,9 @@ func (a *App) bisyncArgs(j Job, mode, filterPath string) []string {
 		"--checkers", strconv.Itoa(g.Checkers),
 		"--log-file", a.jobLog(j),
 		"--log-level", "INFO",
+	}
+	if stageDir != "" {
+		args = append(args, "--backup-dir1", stageDir)
 	}
 	switch g.Compare {
 	case "checksum":
@@ -723,7 +763,16 @@ func (a *App) runJob(j Job, mode string) (string, error) {
 		f.Close()
 	}
 
-	cmd := exec.Command(a.rcloneBin(), a.bisyncArgs(j, mode, filterPath)...)
+	// 网盘侧删除的文件会在这里被 bisync 移进暂存区；跑完还原原位并送系统回收站。
+	stageDir := ""
+	if !strings.HasPrefix(mode, "dry-run") {
+		stageDir = a.newStageDir(j)
+		if stageDir != "" {
+			_ = os.MkdirAll(stageDir, 0o755)
+		}
+	}
+
+	cmd := exec.Command(a.rcloneBin(), a.bisyncArgs(j, mode, filterPath, stageDir)...)
 	hideWindow(cmd)
 	procOut, err := cmd.CombinedOutput()
 
@@ -733,6 +782,18 @@ func (a *App) runJob(j Job, mode string) (string, error) {
 		header += fmt.Sprintf("❌ %s 失败: %v\n", j.Name, err)
 	} else {
 		header += fmt.Sprintf("✅ %s 完成\n", j.Name)
+	}
+	if stageDir != "" {
+		rec, kept, errs := stageAndRecycle(stageDir, j.LocalDir, a.localTrashDir(j))
+		if rec > 0 {
+			header += fmt.Sprintf("· 网盘侧删除：%d 个本地文件已移入系统回收站（可在资源管理器还原）\n", rec)
+		}
+		if kept > 0 {
+			header += fmt.Sprintf("· %d 个文件进不了回收站，已留档到 %s\n", kept, a.localTrashDir(j))
+		}
+		for _, e := range errs {
+			header += "  ! " + e + "\n"
+		}
 	}
 	return header + body + "\n", err
 }

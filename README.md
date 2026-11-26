@@ -56,12 +56,24 @@ sudo ./deploy/install-linux-systemd.sh   # 装 rclone、建目录、注册 syste
 - [docs/弱网调参.md](docs/弱网调参.md) —— 重试/超时/并发参数
 - [docs/备选方案.md](docs/备选方案.md) —— bisync 不稳时的单向方案
 
+## OpenList Desktop 集成
+
+本仓库同时保留桌面端集成层快照：[`desktop/`](desktop/)。
+
+OpenList Desktop 以 sidecar 方式调用本引擎：
+
+```text
+openlistsync -base <数据目录> -run [-job <任务ID>]
+```
+
+这种方式保证桌面 UI 与同步引擎解耦：引擎仍由 `ui/` 中的 Go 源码构建成独立 exe，随桌面端安装包分发，而配置、日志、状态和回收站由 `-base` 指定目录隔离。
 ## 仓库结构
 
 ```
 ui/       Windows 桌面应用（Go）
 deploy/   Linux 服务器部署（rclone + systemd/cron）
 docs/     文档
+THIRD-PARTY-NOTICES.md  第三方组件与许可声明（须随分发包一起分发）
 ```
 
 ## 说明
@@ -71,6 +83,16 @@ docs/     文档
 
 ## License
 
-[MIT](LICENSE) © HTryone
+本仓库代码 [MIT](LICENSE) © HTryone。
+
+随分发包分发的第三方组件：
+
+- **rclone** v1.76.0（`rclone/rclone.exe`，MIT）
+- **Go** 运行时与标准库（编译进 exe，BSD-3-Clause）
+- **WinFsp**（仅挂载功能需要，用户自行安装，**不随包分发**，GPLv3 + FLOSS 例外）
+  —— WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos，
+  见 [winfsp/winfsp](https://github.com/winfsp/winfsp)
+
+完整声明与各许可全文见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
 

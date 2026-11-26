@@ -14,6 +14,7 @@ ui/logs/
 ui/state/
 ui/jobs/
 ui/trash/
+ui/recycle/
 ui/screenshot.png
 
 # 临时脚本 / 验证产物（不入库）

@@ -10,7 +10,7 @@
 
 ## 分发与使用
 
-分发包就是 `dist\`（`OpenListSync.exe` + `rclone\rclone.exe`），解压到任意**可写目录**（如桌面 / `D:\OpenListSync`）
+分发包就是 `dist\`（`OpenListSync.exe` + `rclone\rclone.exe` + `LICENSE` + `THIRD-PARTY-NOTICES.md` + `rclone\COPYING`），解压到任意**可写目录**（如桌面 / `D:\OpenListSync`）
 双击 exe 即用。**不要放在 `C:\Program Files\` 等只读目录**（配置写不进去）。
 
 首次使用：
@@ -28,6 +28,8 @@
 
 - 一个本地文件夹 = `agents-sy/` 下一个同名子目录
 - 本地删除 → 远端删除，归档到 `openlist:/ty2/agents-sy/.trash/<文件夹名>/`（各自独立，不会被二次清理）
+- **网盘侧删除 → 本地文件移入 Windows 回收站**，在资源管理器里可以「还原」回原文件夹；
+  回收站不可用（U 盘 / FAT32 / 网络盘 / 组策略关闭 / 超过配额）时，文件改存到程序目录 `trash\<任务ID>\<时间戳>\`，不会被直接删掉
 - 本地不保留归档（本地删除进系统回收站）
 
 ## `.nosy` 过滤（可选，放本地文件夹根目录）
@@ -49,7 +51,8 @@ docs/*
 
 ## 已知限制
 
-- 比较方式为 **size-only**：服务端（如天翼云盘）不暴露哈希、修改时间不可靠。
+- 比较方式为 **size-only**：rclone 的 WebDAV 后端不读取服务端哈希（即使 OpenList 的 PROPFIND 里带
+  `oc:checksums`），修改时间也不可靠。
   因此**"大小不变、仅改内容"的修改检测不到** —— 请确保编辑后文件大小发生变化。
 - 依赖 Windows（托盘、系统文件夹对话框、DPI 感知）。Linux 服务器部署见仓库 `deploy/`。
 
@@ -63,14 +66,26 @@ rclone\rclone.exe          自带同步引擎
 config.json                配置：网盘地址/账号/密码/同步目录/间隔  ← 含密码
 rclone.conf                由面板生成（含加密后的密码）
 state\  logs\  jobs\       同步状态 / 日志 / 过滤规则缓存
+recycle\                  本次运行中被网盘删除的本地文件暂存区（跑完即清空）
+trash\                    回收站不可用时的本地留档（按任务 ID / 时间戳分目录）
 ```
 
 > 分发时**不要**把 `config.json`、`rclone.conf`、`state/logs` 一起发出去（含你的账号密码）。
 > 对方运行后会在其本机生成自己的配置。
 
+## 第三方组件与许可
+
+- 自带 `rclone\rclone.exe` **v1.76.0**（MIT，未修改），随包附 `rclone\COPYING`；rclone 内部第三方库许可见
+  https://rclone.org/licence/
+- `OpenListSync.exe` 内含 Go 运行时与标准库（BSD-3-Clause）
+- 「挂载为本地磁盘」依赖 **WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos**
+  （https://github.com/winfsp/winfsp ），GPLv3 + FLOSS 例外。本程序**不打包、不分发** WinFsp，
+  需用户自行从 https://winfsp.dev/ 安装；不装只影响挂载，不影响同步
+- 完整声明与各许可全文：分发包内 `THIRD-PARTY-NOTICES.md`
+
 ## 从源码构建
 
-需要 Go 1.21+。把 `rclone.exe` 放到 `ui/rclone/`（或 `dist/rclone/`）：
+需要 Go 1.27+（见 `go.mod`）。把 `rclone.exe` 放到 `ui/rclone/`（或 `dist/rclone/`）：
 
 ```bash
 cd ui
