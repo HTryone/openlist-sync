@@ -20,16 +20,21 @@ $outputName = if ($IsWindows -or $env:OS -eq 'Windows_NT') {
 }
 $output = Join-Path $binaryDir $outputName
 
-# Embed the engine logo (shared icon from engine/) into the sidecar exe
-$icon = Join-Path $repoRoot 'engine/icon.ico'
-if (Test-Path $icon -PathType Leaf) {
-  Copy-Item $icon (Join-Path $sidecarDir 'icon.ico') -Force
-  if (Get-Command rsrc -ErrorAction SilentlyContinue) {
-    rsrc -ico icon.ico -o rsrc_windows_amd64.syso | Out-Null
-  }
-}
 Push-Location $sidecarDir
 try {
+  # Embed the engine logo (shared icon from engine/) so the sidecar carries the right icon
+  $icon = Join-Path $repoRoot 'engine/icon.ico'
+  if (Test-Path $icon -PathType Leaf) {
+    Copy-Item $icon (Join-Path $sidecarDir 'icon.ico') -Force
+    $winres = Join-Path $env:USERPROFILE 'go/bin/go-winres.exe'
+    if (Test-Path $winres) {
+      & $winres simply --icon icon.ico | Out-Null
+      Remove-Item (Join-Path $sidecarDir 'rsrc_windows_386.syso') -Force -ErrorAction SilentlyContinue
+      Remove-Item (Join-Path $sidecarDir 'rsrc_windows_amd64.syso_windows_amd64.syso') -Force -ErrorAction SilentlyContinue
+    } elseif (Get-Command rsrc -ErrorAction SilentlyContinue) {
+      rsrc -ico icon.ico -o rsrc_windows_amd64.syso | Out-Null
+    }
+  }
   go build -trimpath -ldflags '-s -w -H windowsgui' -o $output .
   Remove-Item (Join-Path $sidecarDir 'rsrc_windows_amd64.syso') -Force -ErrorAction SilentlyContinue
   Remove-Item (Join-Path $sidecarDir 'icon.ico') -Force -ErrorAction SilentlyContinue
