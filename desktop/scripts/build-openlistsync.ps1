@@ -20,9 +20,19 @@ $outputName = if ($IsWindows -or $env:OS -eq 'Windows_NT') {
 }
 $output = Join-Path $binaryDir $outputName
 
+# Embed the engine logo (shared icon from engine/) into the sidecar exe
+$icon = Join-Path $repoRoot 'engine/icon.ico'
+if (Test-Path $icon -PathType Leaf) {
+  Copy-Item $icon (Join-Path $sidecarDir 'icon.ico') -Force
+  if (Get-Command rsrc -ErrorAction SilentlyContinue) {
+    rsrc -ico icon.ico -o rsrc_windows_amd64.syso | Out-Null
+  }
+}
 Push-Location $sidecarDir
 try {
   go build -trimpath -ldflags '-s -w -H windowsgui' -o $output .
+  Remove-Item (Join-Path $sidecarDir 'rsrc_windows_amd64.syso') -Force -ErrorAction SilentlyContinue
+  Remove-Item (Join-Path $sidecarDir 'icon.ico') -Force -ErrorAction SilentlyContinue
 } finally {
   Pop-Location
 }
