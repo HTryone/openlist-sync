@@ -16,7 +16,16 @@ ui/jobs/
 ui/trash/
 ui/recycle/
 ui/screenshot.png
-
+# merged desktop project build outputs / installed deps
+desktop/node_modules/
+desktop/dist/
+desktop/dist-ssr/
+desktop/src-tauri/target/
+desktop/src-tauri/binary/
+desktop/src-tauri/resources/
+desktop/.tmp/
+desktop/build/
+desktop/temp/
 # 临时脚本 / 验证产物（不入库）
 .tmp/
 _*.ps1
