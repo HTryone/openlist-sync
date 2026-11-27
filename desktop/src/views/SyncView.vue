@@ -20,6 +20,13 @@
           <CustomButton type="secondary" :icon="RefreshCw" :text="t('sync.actions.refresh')" @click="load" />
           <CustomButton type="secondary" :icon="Plus" :text="t('sync.actions.add')" @click="openAdd" />
           <CustomButton
+            type="secondary"
+            :icon="ShieldCheck"
+            :text="t('sync.actions.verifyAll')"
+            :disabled="running !== '' || jobs.length === 0"
+            @click="verify()"
+          />
+          <CustomButton
             type="primary"
             :icon="Play"
             :text="running ? t('sync.run.running') : t('sync.actions.syncAll')"
@@ -100,6 +107,77 @@
           </SettingCard>
         </SettingSection>
 
+        <!-- Advanced -->
+        <SettingSection :icon="SlidersHorizontal" :title="t('sync.advanced.title')">
+          <SettingCard>
+            <div class="flex w-full items-center justify-between gap-3">
+              <div class="flex flex-col gap-0.5">
+                <span class="text-sm font-medium text-main">{{ t('sync.advanced.verifyOnSync') }}</span>
+                <span class="text-xs text-secondary">{{ t('sync.advanced.verifyOnSyncTip') }}</span>
+              </div>
+              <CustomSwitch v-model="verifyOnSync" />
+            </div>
+          </SettingCard>
+          <SettingCard>
+            <div class="grid w-full grid-cols-2 gap-3 md:grid-cols-4">
+              <div>
+                <CustomInput
+                  v-model.number="globals.maxDelete"
+                  input-type="number"
+                  :title="t('sync.advanced.maxDelete')"
+                  placeholder="50"
+                />
+              </div>
+              <div>
+                <CustomInput
+                  v-model.number="globals.transfers"
+                  input-type="number"
+                  :title="t('sync.advanced.transfers')"
+                  placeholder="1"
+                />
+              </div>
+              <div>
+                <CustomInput
+                  v-model.number="globals.checkers"
+                  input-type="number"
+                  :title="t('sync.advanced.checkers')"
+                  placeholder="2"
+                />
+              </div>
+              <div>
+                <CustomInput
+                  v-model.number="globals.retries"
+                  input-type="number"
+                  :title="t('sync.advanced.retries')"
+                  placeholder="10"
+                />
+              </div>
+              <div>
+                <CustomInput
+                  v-model.number="globals.lowLevelRetries"
+                  input-type="number"
+                  :title="t('sync.advanced.lowLevelRetries')"
+                  placeholder="20"
+                />
+              </div>
+              <div class="col-span-2">
+                <CustomInput v-model="globals.timeout" :title="t('sync.advanced.timeout')" placeholder="5m" />
+              </div>
+              <div class="col-span-2">
+                <CustomSelect
+                  v-model="globals.compare"
+                  :title="t('sync.advanced.compare')"
+                  :key-list="['size', 'modtime', 'checksum']"
+                  fronticon
+                />
+              </div>
+            </div>
+            <div class="mt-3 flex justify-end">
+              <CustomButton type="primary" :icon="Save" :text="t('sync.connection.save')" @click="saveConfig" />
+            </div>
+          </SettingCard>
+        </SettingSection>
+
         <!-- Jobs -->
         <SettingSection :icon="FolderSync" :title="t('sync.jobs.title')">
           <div v-if="jobs.length === 0" class="py-8 text-center text-sm text-secondary">
@@ -130,6 +208,13 @@
               :text="t('sync.actions.sync')"
               :disabled="running !== ''"
               @click="run(job.id)"
+            />
+            <CustomButton
+              type="secondary"
+              :icon="ShieldCheck"
+              :text="t('sync.actions.verify')"
+              :disabled="running !== ''"
+              @click="verify(job.id)"
             />
             <CustomButton
               type="secondary"
@@ -219,6 +304,8 @@ import {
   Plus,
   RefreshCw,
   Save,
+  ShieldCheck,
+  SlidersHorizontal,
   Terminal as TerminalIcon,
   Timer,
   Trash2,
@@ -234,6 +321,7 @@ import CustomModal from '@/components/common/CustomModal.vue'
 import CustomSwitch from '@/components/common/CustomSwitch.vue'
 import SettingCard from '@/components/common/SettingCard.vue'
 import SettingSection from '@/components/common/SettingSection.vue'
+import CustomSelect from '@/components/common/SingleSelect.vue'
 import useConfirm from '@/hooks/useConfirm'
 import useMessage from '@/hooks/useMessage'
 
@@ -252,6 +340,13 @@ const globals = reactive<SyncGlobals>({
   remoteBase: '',
   remoteFolderName: 'agents-sy',
   compare: 'size',
+  maxDelete: 50,
+  transfers: 1,
+  checkers: 2,
+  retries: 10,
+  lowLevelRetries: 20,
+  timeout: '5m',
+  verifyOnSync: false,
 })
 const jobs = ref<SyncJob[]>([])
 const running = ref('')
@@ -269,6 +364,14 @@ const autoEnabled = computed({
     void saveConfig()
   },
 })
+const verifyOnSync = computed({
+  get: () => globals.verifyOnSync ?? false,
+  set: (v: boolean) => {
+    globals.verifyOnSync = v
+    void saveConfig()
+  },
+})
+
 const intervalMin = computed({
   get: () => globals.intervalMin ?? 30,
   set: (v: number) => {
@@ -279,13 +382,7 @@ const intervalMin = computed({
 const trimSlash = (s: string) => (s || '').trim().replace(/\/+$/, '')
 
 // 与引擎一致：网盘目标 = 根目录/固定子目录/本地文件夹名
-const derivedRemote = computed(() => {
-  const base = trimSlash(globals.remoteBase)
-  const folder = (globals.remoteFolderName || 'agents-sy').trim()
-  const name = (form.name || '').trim() || baseName(form.localDir)
-  if (!name) return ''
-  return `${base}/${folder}/${name}`
-})
+const derivedRemote = computed(() => derivedRemoteFor(form.name.trim(), form.localDir))
 
 function baseName(p: string): string {
   const parts = (p || '').split(/[\\/]/).filter(Boolean)
@@ -333,6 +430,27 @@ async function run(jobId?: string) {
   }
 }
 
+async function verify(jobId?: string) {
+  if (running.value) return
+  running.value = jobId && jobId.length > 0 ? jobId : 'verify'
+  output.value = ''
+  lastCode.value = null
+  try {
+    const result = await TauriAPI.sync.verify(jobId)
+    output.value = result.output || ''
+    lastCode.value = result.code
+    if (result.code === 0) success(t('sync.run.verifyDone'))
+    else error(t('sync.run.failed', { code: result.code }))
+  } catch (e) {
+    lastCode.value = -1
+    output.value = String(e)
+    error(String(e))
+  } finally {
+    running.value = ''
+    await load()
+  }
+}
+
 function openAdd() {
   resetForm()
   showAdd.value = true
@@ -366,18 +484,39 @@ async function addJob() {
     return
   }
   const name = form.name.trim() || baseName(localDir)
+  // 与引擎 tagAuto 一致：网盘目标等于自动派生值才标记 autoRemote，
+  // 否则视为手动指定，引擎加载配置后不会覆盖用户手填的路径。
+  const remoteDir = form.remoteDir.trim() || derivedRemote.value
+  const auto = derivedRemoteFor(name, localDir)
+  const autoRemote = trimSlash(remoteDir).toLowerCase() === trimSlash(auto).toLowerCase()
   const job: SyncJob = {
     id: `job-${Date.now().toString(36)}`,
     name,
     localDir,
-    remoteDir: form.remoteDir.trim() || derivedRemote.value,
+    remoteDir,
     remoteTrashDir: '',
-    autoRemote: true,
+    autoRemote,
     enabled: form.enabled,
   }
   jobs.value = [...jobs.value, job]
   await saveConfig()
   resetForm()
+  // 立即在网盘创建目标目录与垃圾桶目录（与文档"选完自动建好"一致）
+  try {
+    await TauriAPI.sync.prepare()
+  } catch (e) {
+    error(String(e))
+  }
+}
+
+// 与引擎 prepJob 一致的派生规则：remoteBase/remoteFolderName/本地文件夹名。
+// 注意：引擎用"本地文件夹的 basename"，不用任务名，避免两边派生结果不同。
+function derivedRemoteFor(name: string, localDir: string): string {
+  const base = trimSlash(globals.remoteBase)
+  const folder = (globals.remoteFolderName || 'agents-sy').trim()
+  const dirName = baseName(localDir) || name
+  if (!dirName) return ''
+  return `${base}/${folder}/${dirName}`
 }
 
 async function removeJob(job: SyncJob) {

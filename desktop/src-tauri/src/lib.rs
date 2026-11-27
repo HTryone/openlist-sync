@@ -30,7 +30,10 @@ use cmd::rclone_mount::{
     unmount_remote,
 };
 use cmd::updater::{get_current_version, is_auto_check_enabled, set_auto_check_enabled};
-use cmd::sync::{sync_engine_info, sync_load_config, sync_run, sync_save_config, sync_tail_log};
+use cmd::sync::{
+    sync_engine_info, sync_load_config, sync_prepare, sync_run, sync_save_config, sync_tail_log,
+    sync_verify,
+};
 use object::structs::*;
 use tauri::Emitter;
 
@@ -236,12 +239,9 @@ async fn auto_mount_rclone_remotes_on_login(app_handle: &tauri::AppHandle) -> Re
             "Auto-mount on login is enabled for remote '{}', attempting to mount",
             remote.name
         );
+        let remote_path = remote.remote_path();
         let mut args = vec![
-            format!(
-                "{}:{}",
-                remote.name,
-                remote.volume_name.as_deref().unwrap_or("")
-            ),
+            format!("{}:{}", remote.name, remote_path),
             remote.mount_point.as_deref().unwrap_or("").to_string(),
         ];
         if let Some(extra_flags) = &remote.extra_flags {
@@ -356,6 +356,8 @@ pub fn run() {
             sync_load_config,
             sync_save_config,
             sync_run,
+            sync_prepare,
+            sync_verify,
             sync_tail_log,
             get_current_version,
             set_auto_check_enabled,

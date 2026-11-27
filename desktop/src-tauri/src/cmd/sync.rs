@@ -144,6 +144,8 @@ fn default_config(app: &AppHandle) -> Value {
             "lowLevelRetries": 20,
             "contimeout": "30s",
             "timeout": "5m",
+            "verifyOnSync": false,
+            "mountRCAddr": "127.0.0.1:5572",
             "maxDelete": 50,
             "compare": "size",
             "rclonePath": rclone,
@@ -222,14 +224,64 @@ pub async fn sync_run(app: AppHandle, job_id: Option<String>) -> Result<SyncRunR
     run_engine(app, job_id).await
 }
 
-async fn run_engine(app: AppHandle, job_id: Option<String>) -> Result<SyncRunResult, String> {
+/// 仅在网盘创建各任务目标目录与垃圾桶目录（添加目录后立即调用）
+#[tauri::command]
+pub async fn sync_prepare(app: AppHandle) -> Result<SyncRunResult, String> {
     let dir = data_dir(&app)?;
     let engine = engine_path(&app)
         .ok_or_else(|| "找不到同步引擎 openlistsync.exe，请确认它与主程序在同一目录".to_string())?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut cmd = Command::new(&engine);
+        cmd.arg("-base").arg(&dir).arg("-prepare");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let out = cmd.output().map_err(|e| format!("启动同步引擎失败: {e}"))?;
+        let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+        let err = String::from_utf8_lossy(&out.stderr);
+        if !err.trim().is_empty() {
+            text.push_str("\n[stderr]\n");
+            text.push_str(&err);
+        }
+        Ok(SyncRunResult {
+            code: out.status.code().unwrap_or(-1),
+            output: text,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 深度校验：下载比对内容，把大小相同但内容已改的文件以本地为准推到网盘
+#[tauri::command]
+pub async fn sync_verify(app: AppHandle, job_id: Option<String>) -> Result<SyncRunResult, String> {
+    run_engine_with(app, job_id, Some("-verify")).await
+}
+
+async fn run_engine(app: AppHandle, job_id: Option<String>) -> Result<SyncRunResult, String> {
+    run_engine_with(app, job_id, None).await
+}
+
+async fn run_engine_with(
+    app: AppHandle,
+    job_id: Option<String>,
+    extra_flag: Option<&str>,
+) -> Result<SyncRunResult, String> {
+    let dir = data_dir(&app)?;
+    let engine = engine_path(&app)
+        .ok_or_else(|| "找不到同步引擎 openlistsync.exe，请确认它与主程序在同一目录".to_string())?;
+    let extra = extra_flag.map(|s| s.to_string());
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = Command::new(&engine);
         cmd.arg("-base").arg(&dir).arg("-run");
+        if let Some(flag) = &extra {
+            cmd.arg(flag);
+        }
         if let Some(id) = job_id.as_ref().filter(|s| !s.trim().is_empty()) {
             cmd.arg("-job").arg(id);
         }

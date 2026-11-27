@@ -332,13 +332,16 @@
       "add": "添加目录",
       "sync": "同步",
       "syncAll": "同步全部",
-      "delete": "移除"
+      "delete": "移除",
+      "verify": "校验",
+      "verifyAll": "内容校验"
     },
     "run": {
       "running": "正在同步…",
       "done": "同步完成",
       "failed": "同步失败（退出码 {code}）",
-      "output": "本次输出"
+      "output": "本次输出",
+      "verifyDone": "内容校验完成"
     },
     "modal": {
       "addTitle": "添加同步目录",
@@ -354,7 +357,19 @@
       "remoteDirTip": "留空则按「网盘根目录/固定子目录/名称」自动生成",
       "enabled": "启用同步"
     },
-    "confirmRemove": "不再同步「{name}」？只移除配置，不会删除任何文件。"
+    "confirmRemove": "不再同步「{name}」？只移除配置，不会删除任何文件。",
+    "advanced": {
+      "title": "高级参数",
+      "verifyOnSync": "同步后内容校验",
+      "verifyOnSyncTip": "每轮同步后下载比对本地与网盘文件内容，把\"大小相同但内容已改\"的文件以本地为准推到网盘。更准确但更慢、费流量。",
+      "maxDelete": "单次删除上限 (%)",
+      "transfers": "并行传输数",
+      "checkers": "并行检查数",
+      "retries": "重试次数",
+      "lowLevelRetries": "底层重试次数",
+      "timeout": "IO 超时",
+      "compare": "比较方式"
+    }
   },
   "settings": {
     "app": {

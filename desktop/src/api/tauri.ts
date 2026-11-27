@@ -21,6 +21,9 @@ export class TauriAPI {
     saveConfig: (config: SyncConfig): Promise<boolean> => invoke('sync_save_config', { config }),
     run: (jobId?: string): Promise<SyncRunResult> =>
       invoke('sync_run', { jobId: jobId && jobId.length > 0 ? jobId : null }),
+    prepare: (): Promise<SyncRunResult> => invoke('sync_prepare'),
+    verify: (jobId?: string): Promise<SyncRunResult> =>
+      invoke('sync_verify', { jobId: jobId && jobId.length > 0 ? jobId : null }),
     tailLog: (jobId: string, lines = 200): Promise<string> => invoke('sync_tail_log', { jobId, lines }),
   }
 

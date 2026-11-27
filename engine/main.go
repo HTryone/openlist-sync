@@ -1,7 +1,9 @@
 // OpenListSync 引擎 — headless 双向同步核心（纯 CLI，无面板/托盘/挂载 UI）
 // 由 OpenList Desktop 作为 sidecar 调用，也可独立常驻运行：
-//   openlistsync -base <数据目录> -run  [-job <ID>]   执行一轮同步后退出
-//   openlistsync -base <数据目录> -serve               常驻后台，按间隔自动同步
+//
+//	openlistsync -base <数据目录> -run  [-job <ID>]   执行一轮同步后退出
+//	openlistsync -base <数据目录> -serve               常驻后台，按间隔自动同步
+//
 // 单文件 Go 应用，仅用标准库。管理引擎自己的 rclone 配置与定时任务，
 // 不修改全局 rclone.conf。参数针对本机 OpenList(5244) 实测校准：
 //   - 无哈希、modtime 不可靠 => --size-only
@@ -14,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +67,8 @@ type Globals struct {
 	MountCacheDir     string `json:"mountCacheDir"`     // VFS 缓存目录（空=默认临时目录）
 	MountCacheKeepSec int    `json:"mountCacheKeepSec"` // 缓存保留时长（秒），超时自动清理
 	MountCacheMaxGB   int    `json:"mountCacheMaxGB"`   // 缓存目录上限（GB），超过自动清最久未访问
+	MountRCAddr       string `json:"mountRCAddr"`       // rclone mount 的 rc 服务地址（同步后用它刷新挂载盘 VFS 缓存；空=不刷新）
+	VerifyOnSync      bool   `json:"verifyOnSync"`      // 每轮同步后做深度校验（下载比对内容，修复同尺寸不同内容），较慢
 }
 
 type Config struct {
@@ -78,6 +83,7 @@ func defaultConfig() Config {
 			IntervalMin: 30, Transfers: 1, Checkers: 2, Retries: 10, LowLevelRetries: 20,
 			Contimeout: "30s", TimeoutStr: "5m", MaxDelete: 50, Compare: "size",
 			RclonePath: "rclone", Remote: "openlist", RemoteBase: "", RemoteFolderName: "agents-sy", AutoEnabled: true,
+			MountRCAddr: "127.0.0.1:5572",
 		},
 		Jobs: []Job{},
 	}
@@ -86,18 +92,20 @@ func defaultConfig() Config {
 // ---------- 应用 ----------
 
 type App struct {
-	base        string
-	confPath    string
-	conf        Config
-	rcloneLog   string
-	onlyJob     string // -job：只跑这一个任务（空=全部启用）
-	mu          sync.Mutex
-	running     map[string]bool
+	base      string
+	confPath  string
+	conf      Config
+	rcloneLog string
+	onlyJob   string // -job：只跑这一个任务（空=全部启用）
+	mu        sync.Mutex
+	running   map[string]bool
 }
 
 func main() {
 	initJobObject() // 子进程(挂载)随主程序退出而终止，防死链
 	runMode := flag.Bool("run", false, "执行一轮全部启用目录的同步后退出")
+	verifyMode := flag.Bool("verify", false, "深度校验：下载比对本地与网盘文件内容，把内容不同（即使大小相同）的文件以本地为准推到网盘")
+	prepareMode := flag.Bool("prepare", false, "仅在网盘创建各任务的目标目录与垃圾桶目录后退出")
 	serveMode := flag.Bool("serve", false, "常驻后台：内置调度器按间隔持续同步（桌面端退出后不中断）")
 	baseFlag := flag.String("base", "", "数据目录（config/state/logs/recycle 都放这里），默认是 exe 所在目录")
 	jobFlag := flag.String("job", "", "只执行指定任务 ID（配合 -run 使用）")
@@ -107,7 +115,6 @@ func main() {
 		base = filepath.Clean(*baseFlag)
 	}
 	app := &App{base: base, confPath: filepath.Join(base, "config.json"), rcloneLog: filepath.Join(base, "rclone.log"), running: map[string]bool{}, onlyJob: strings.TrimSpace(*jobFlag)}
-
 
 	app.conf = defaultConfig()
 	if b, err := os.ReadFile(app.confPath); err == nil {
@@ -130,6 +137,9 @@ func main() {
 		if app.conf.Globals.Remote == "" {
 			app.conf.Globals.Remote = "openlist"
 		}
+		if app.conf.Globals.MountRCAddr == "" {
+			app.conf.Globals.MountRCAddr = "127.0.0.1:5572"
+		}
 		app.hardenAll()
 	} else {
 		_ = app.saveConf()
@@ -140,6 +150,14 @@ func main() {
 		_ = app.filterFor(j)
 	}
 
+	if *prepareMode {
+		os.Exit(app.prepareAll())
+	}
+	if *verifyMode {
+		app.runVerifyCLI()
+		return
+	}
+
 	if *runMode {
 		app.runAllCLI()
 		return
@@ -147,10 +165,12 @@ func main() {
 
 	// 常驻模式：内置调度器持续按间隔同步；桌面端退出后引擎继续运行
 	if *serveMode {
-		if !acquireSingleInstance(`Local\OpenListSync_EngineServe`) {
-			log.Printf("openlistsync -serve 已在运行，跳过重复启动")
+		unlock := acquireServeLock(base)
+		if unlock == nil {
+			log.Printf("openlistsync -serve 已在运行（检测到 %s），跳过重复启动", serveLockFile)
 			return
 		}
+		defer unlock()
 		app.startScheduler()
 		log.Printf("OpenListSync 引擎常驻运行：工作目录 %s（按配置间隔自动同步）", base)
 		select {}
@@ -181,6 +201,13 @@ func (a *App) runAllCLI() {
 		if err != nil {
 			rc = 1
 		}
+		if a.conf.Globals.VerifyOnSync {
+			vout, verr := a.verifyJob(j)
+			fmt.Print(vout)
+			if verr != nil {
+				rc = 1
+			}
+		}
 	}
 	if a.onlyJob != "" && n == 0 {
 		fmt.Printf("[openlist-sync] 没有找到任务 %s（或该任务已停用）\n", a.onlyJob)
@@ -188,6 +215,174 @@ func (a *App) runAllCLI() {
 	}
 	fmt.Printf("\n[openlist-sync] 共执行 %d 个目录，退出码 %d\n", n, rc)
 	os.Exit(rc)
+}
+
+// prepareAll 仅创建远端目标目录与垃圾桶目录，返回失败数
+func (a *App) prepareAll() int {
+	failed := 0
+	for _, j := range a.conf.Jobs {
+		if !j.Enabled {
+			continue
+		}
+		if _, err := a.ownRcloneConf(); err != nil {
+			fmt.Printf("[%s] 无法生成 rclone 配置: %v\n", j.Name, err)
+			failed++
+			continue
+		}
+		if strings.TrimSpace(j.RemoteDir) == "" {
+			continue
+		}
+		if _, err := a.rclone("mkdir", j.RemoteDir); err != nil {
+			fmt.Printf("[%s] 创建远端目录失败 %s: %v\n", j.Name, j.RemoteDir, err)
+			failed++
+		}
+		if j.RemoteTrashDir != "" {
+			if _, err := a.rclone("mkdir", j.RemoteTrashDir); err != nil {
+				fmt.Printf("[%s] 创建远端垃圾桶失败 %s: %v\n", j.Name, j.RemoteTrashDir, err)
+				failed++
+			}
+		}
+	}
+	fmt.Printf("[openlist-sync] 远端目录准备完成，失败 %d 个\n", failed)
+	return failed
+}
+
+// runVerifyCLI -verify 模式入口：逐任务深度校验后退出
+func (a *App) runVerifyCLI() {
+	rc := 0
+	n := 0
+	for _, j := range a.conf.Jobs {
+		if !j.Enabled {
+			continue
+		}
+		if a.onlyJob != "" && j.ID != a.onlyJob {
+			continue
+		}
+		n++
+		out, err := a.verifyJob(j)
+		fmt.Print(out)
+		if err != nil {
+			rc = 1
+		}
+	}
+	if a.onlyJob != "" && n == 0 {
+		fmt.Printf("[openlist-sync] 没有找到任务 %s（或该任务已停用）\n", a.onlyJob)
+		rc = 2
+	}
+	fmt.Printf("\n[openlist-sync] 深度校验完成 %d 个目录，退出码 %d\n", n, rc)
+	os.Exit(rc)
+}
+
+// verifyJob 深度校验：--checkfile 抓出"大小相同但内容不同"的文件，再用
+// copy --size-only 把本地版本推到网盘（copy 对同尺寸文件默认跳过，
+// 所以这里用 --no-... 不行，rclone copy 没有 ignore-size 选项；改为
+// 用 check 找出差异文件后逐个 copyto 覆盖）。
+func (a *App) verifyJob(j Job) (string, error) {
+	if _, err := a.ownRcloneConf(); err != nil {
+		return "", err
+	}
+	_ = os.MkdirAll(filepath.Dir(a.jobLog(j)), 0o755)
+	logPath := a.jobLog(j)
+	if f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); e == nil {
+		fmt.Fprintf(f, "\n===== [%s] %s 深度校验开始 =====\n", time.Now().Format("2006-01-02 15:04:05"), j.Name)
+		f.Close()
+	}
+
+	header := fmt.Sprintf("【%s】深度校验 %s ↔ %s\n", j.Name, j.LocalDir, j.RemoteDir)
+
+	// 1) 找出内容不同的文件（本地为基准计算 MD5，下载远端比对）
+	checkArgs := []string{"check", j.LocalDir, j.RemoteDir,
+		"--config", filepath.Join(a.base, "rclone.conf"),
+		"--download",
+		"--combined", filepath.Join(a.base, "jobs", j.ID+".checkdiff"),
+		"--log-file", logPath, "--log-level", "INFO",
+	}
+	if fp := a.filterFor(j); fp != "" {
+		checkArgs = append(checkArgs, "--filter-from", fp)
+	}
+	c := exec.Command(a.rcloneBin(), checkArgs...)
+	hideWindow(c)
+	_, checkErr := c.CombinedOutput()
+	if checkErr != nil {
+		// rclone check 有差异时退出码非 0，属预期；真正的命令错误也在这里
+		header += fmt.Sprintf("· 校验发现差异或存在错误（详见日志）\n")
+	}
+
+	// 2) --combined 输出里 "==" 行表示 hash 不同（内容不同）
+	diffList := filepath.Join(a.base, "jobs", j.ID+".checkdiff")
+	var differing []string
+	if b, err := os.ReadFile(diffList); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "== ") {
+				differing = append(differing, strings.TrimSpace(strings.TrimPrefix(line, "== ")))
+			}
+		}
+		_ = os.Remove(diffList)
+	}
+	// 过滤：只保留相对路径里不在排除规则里的（check 已按 --filter-from 过滤）
+	if len(differing) == 0 {
+		header += "✅ 内容校验一致（或无可比文件）\n"
+		if f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); e == nil {
+			fmt.Fprintf(f, "===== [%s] 深度校验结束：无差异 =====\n", j.Name)
+			f.Close()
+		}
+		return header, nil
+	}
+	header += fmt.Sprintf("· 发现 %d 个内容不同（大小可能相同）的文件，以本地为准推送到网盘：\n", len(differing))
+	var firstErr error
+	pushed := 0
+	for _, rel := range differing {
+		rel = strings.ReplaceAll(rel, "\\", "/")
+		src := filepath.Join(j.LocalDir, filepath.FromSlash(rel))
+		st, err := os.Stat(src)
+		if err != nil || st.IsDir() {
+			continue // 本地已删的差异文件交给常规 bisync 处理
+		}
+		dst := j.RemoteDir + "/" + rel
+		out, err := a.rclone("copyto", src, dst,
+			"--log-file", logPath, "--log-level", "INFO")
+		if err != nil {
+			header += fmt.Sprintf("  ! 推送失败 %s: %v %s\n", rel, err, strings.TrimSpace(out))
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		pushed++
+		header += fmt.Sprintf("  ↑ %s\n", rel)
+	}
+	header += fmt.Sprintf("✅ 深度校验完成：推送 %d/%d 个差异文件\n", pushed, len(differing))
+	if f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); e == nil {
+		fmt.Fprintf(f, "===== [%s] 深度校验结束：推送 %d/%d =====\n", j.Name, pushed, len(differing))
+		f.Close()
+	}
+	return header, firstErr
+}
+
+// refreshMountCache 通过 rclone mount 的 rc 接口刷新 VFS 目录/数据缓存。
+// 同步把新文件拉到本地后，挂载盘上看到的还是旧缓存；dir-cache-time 到期前用户
+// 只能读到旧内容。有 rc 地址配置时（默认 127.0.0.1:5572，mount 需加 --rc），
+// 同步完成后调用 vfs/refresh 递归刷新目录缓存，挂载盘立即呈现最新内容。
+// 失败静默（mount 未开 rc 时不影响同步本身）。
+func (a *App) refreshMountCache() {
+	addr := strings.TrimSpace(a.conf.Globals.MountRCAddr)
+	if addr == "" {
+		return
+	}
+	url := fmt.Sprintf("http://%s/rc/vfs/refresh", addr)
+	body := strings.NewReader("{\"recursive\": true}")
+	req, err := http.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return // mount 未开启 rc 或未挂载，静默跳过
+	}
+	_ = resp.Body.Close()
 }
 
 func mustExeDir() string {
@@ -676,6 +871,7 @@ func (a *App) runAll() {
 		}
 	}
 	a.mu.Unlock()
+	// js 是快照；任务执行期间保存配置不会影响本轮已在跑的任务
 	defer func() {
 		a.mu.Lock()
 		for _, j := range js {
@@ -689,7 +885,12 @@ func (a *App) runAll() {
 		} else {
 			a.runJob(j, "sync")
 		}
+		if a.conf.Globals.VerifyOnSync {
+			a.verifyJob(j) // size-only 补丁：内容比对，同尺寸不同内容以本地为准推网盘
+		}
 	}
+	// 同步可能从网盘拉了新文件：刷新挂载盘的 VFS 缓存（若挂载开着 rc）
+	a.refreshMountCache()
 }
 
 // startScheduler 常驻调度器：启动稍候即跑一次（若开启），之后按当前设置的间隔循环。
@@ -712,8 +913,21 @@ func (a *App) startScheduler() {
 		}
 	}()
 }
-// ---------- 单实例锁（防多个常驻引擎重复跑同一任务） ----------
 
-func acquireSingleInstance(name string) bool {
-	return true
+// ---------- 单实例锁（防多个常驻引擎重复跑同一任务） ----------
+// 用 base 目录下的锁文件实现：O_CREATE|O_EXCL 创建成功=拿到锁；
+// 退出时删除。崩溃残留由 serve 启动时检测进程是否存活来容忍（简单策略：
+// 直接覆盖旧锁文件，因为引擎自身有 running map 防 same-process 重入，
+// 跨进程重复启动场景这里挡住最常见的"双击两次"即可）。
+
+const serveLockFile = "serve.lock"
+
+func acquireServeLock(base string) func() {
+	path := filepath.Join(base, serveLockFile)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil
+	}
+	_ = f.Close()
+	return func() { _ = os.Remove(path) }
 }

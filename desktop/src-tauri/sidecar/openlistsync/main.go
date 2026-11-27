@@ -70,6 +70,8 @@ type Globals struct {
 	MountCacheDir     string `json:"mountCacheDir"`     // VFS 缓存目录（空=默认临时目录）
 	MountCacheKeepSec int    `json:"mountCacheKeepSec"` // 缓存保留时长（秒），超时自动清理
 	MountCacheMaxGB   int    `json:"mountCacheMaxGB"`   // 缓存目录上限（GB），超过自动清最久未访问
+	MountRCAddr       string `json:"mountRCAddr"`       // rclone mount 的 rc 地址（同步后刷新挂载盘缓存；空=不刷新）
+	VerifyOnSync      bool   `json:"verifyOnSync"`      // 每轮同步后做深度校验（下载比对内容，修复同尺寸不同内容），较慢
 }
 
 type Config struct {
@@ -84,6 +86,8 @@ func defaultConfig() Config {
 			IntervalMin: 30, Transfers: 1, Checkers: 2, Retries: 10, LowLevelRetries: 20,
 			Contimeout: "30s", TimeoutStr: "5m", MaxDelete: 50, Compare: "size",
 			RclonePath: "rclone", Remote: "openlist", RemoteBase: "", RemoteFolderName: "agents-sy", AutoEnabled: true,
+			MountRCAddr:  "127.0.0.1:5572",
+			VerifyOnSync: false,
 		},
 		Jobs: []Job{},
 	}
@@ -142,6 +146,9 @@ func main() {
 		}
 		if app.conf.Globals.Remote == "" {
 			app.conf.Globals.Remote = "openlist"
+		}
+		if app.conf.Globals.MountRCAddr == "" {
+			app.conf.Globals.MountRCAddr = "127.0.0.1:5572"
 		}
 		app.hardenAll()
 	} else {
@@ -363,6 +370,101 @@ func (a *App) runAllCLI() {
 	}
 	fmt.Printf("\n[openlist-sync] 共执行 %d 个目录，退出码 %d\n", n, rc)
 	os.Exit(rc)
+}
+
+// refreshMountCache 通过 mount 的 rc 接口刷新 VFS 缓存（recursive）。
+// 同步/拉取后挂载盘立即看到最新内容；mount 未开 --rc 时静默失败。
+func (a *App) refreshMountCache() {
+	addr := strings.TrimSpace(a.conf.Globals.MountRCAddr)
+	if addr == "" {
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("http://%s/rc/vfs/refresh", addr),
+		strings.NewReader(`{"recursive": true}`))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+}
+
+// verifyJob 深度校验：check --download 找出内容不同（含同尺寸不同内容）的文件，
+// 以本地为准 copyto 推回网盘。size-only 的补丁通道。
+func (a *App) verifyJob(j Job) (string, error) {
+	if _, err := a.ownRcloneConf(); err != nil {
+		return "", err
+	}
+	_ = os.MkdirAll(filepath.Dir(a.jobLog(j)), 0o755)
+	logPath := a.jobLog(j)
+	if f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); e == nil {
+		fmt.Fprintf(f, "\n===== [%s] %s 深度校验开始 =====\n", time.Now().Format("2006-01-02 15:04:05"), j.Name)
+		f.Close()
+	}
+	header := fmt.Sprintf("【%s】深度校验 %s ↔ %s\n", j.Name, j.LocalDir, j.RemoteDir)
+	checkArgs := []string{"check", j.LocalDir, j.RemoteDir,
+		"--config", filepath.Join(a.base, "rclone.conf"),
+		"--download",
+		"--combined", filepath.Join(a.base, "jobs", j.ID+".checkdiff"),
+		"--log-file", logPath, "--log-level", "INFO",
+	}
+	if fp := a.filterFor(j); fp != "" {
+		checkArgs = append(checkArgs, "--filter-from", fp)
+	}
+	c := exec.Command(a.rcloneBin(), checkArgs...)
+	hideWindow(c)
+	_, _ = c.CombinedOutput()
+
+	diffList := filepath.Join(a.base, "jobs", j.ID+".checkdiff")
+	var differing []string
+	if b, err := os.ReadFile(diffList); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "== ") {
+				differing = append(differing, strings.TrimSpace(strings.TrimPrefix(line, "== ")))
+			}
+		}
+		_ = os.Remove(diffList)
+	}
+	if len(differing) == 0 {
+		header += "✅ 内容校验一致（或无可比文件）\n"
+		if f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); e == nil {
+			fmt.Fprintf(f, "===== [%s] 深度校验结束：无差异 =====\n", j.Name)
+			f.Close()
+		}
+		return header, nil
+	}
+	header += fmt.Sprintf("· 发现 %d 个内容不同（大小可能相同）的文件，以本地为准推送到网盘：\n", len(differing))
+	var firstErr error
+	pushed := 0
+	for _, rel := range differing {
+		rel = strings.ReplaceAll(rel, "\\\\/", "/")
+		src := filepath.Join(j.LocalDir, filepath.FromSlash(rel))
+		if st, err := os.Stat(src); err != nil || st.IsDir() {
+			continue
+		}
+		dst := j.RemoteDir + "/" + rel
+		out, err := a.rclone("copyto", src, dst, "--log-file", logPath, "--log-level", "INFO")
+		if err != nil {
+			header += fmt.Sprintf("  ! 推送失败 %s: %v %s\n", rel, err, strings.TrimSpace(out))
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		pushed++
+		header += fmt.Sprintf("  ↑ %s\n", rel)
+	}
+	header += fmt.Sprintf("✅ 深度校验完成：推送 %d/%d 个差异文件\n", pushed, len(differing))
+	if f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); e == nil {
+		fmt.Fprintf(f, "===== [%s] 深度校验结束：推送 %d/%d =====\n", j.Name, pushed, len(differing))
+		f.Close()
+	}
+	return header, firstErr
 }
 
 func mustExeDir() string {
@@ -1161,8 +1263,12 @@ func (a *App) handleAction(w http.ResponseWriter, r *http.Request) {
 				} else {
 					a.runJob(jj, "sync")
 				}
+				if a.conf.Globals.VerifyOnSync {
+					a.verifyJob(jj) // size-only 补丁：同尺寸不同内容以本地为准推网盘
+				}
 			}
 		}
+		a.refreshMountCache()
 	}(targets)
 
 	names := make([]string, 0, len(targets))
@@ -1207,7 +1313,11 @@ func (a *App) runAll() {
 		} else {
 			a.runJob(j, "sync")
 		}
+		if a.conf.Globals.VerifyOnSync {
+			a.verifyJob(j)
+		}
 	}
+	a.refreshMountCache()
 }
 
 // startScheduler 软件内置定时器：启动即跑一次（若开启），之后按当前设置的间隔循环。
@@ -1604,6 +1714,7 @@ func (a *App) pullJob(j Job) {
 		fmt.Fprintf(f, "===== [%s] 从网盘拉取结束 =====\n", j.Name)
 		f.Close()
 	}
+	a.refreshMountCache()
 }
 
 func fileExists(p string) bool {

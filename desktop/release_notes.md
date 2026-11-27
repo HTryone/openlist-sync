@@ -1,5 +1,11 @@
 # 更新日志
 
+## 2026-11-27
+
+### 🐛 修复的错误
+
+- 修复 Windows 挂载时 `volumeName` 被错误拼接为远程子路径的问题：`volumeName: OpenList` 会生成 `remote:OpenList` 导致 WebDAV 返回 `404 storage not found`，挂载盘根目录显示为空。现在 `/`、空白或空值统一规范化为远程根目录（`remote:`），子目录如 `/subdir/` 规范化为 `remote:subdir`；手动挂载与登录自动挂载共用同一逻辑。
+
 ## ✨ 新功能
 
 - Windows 现支持为每个挂载单独设置“挂载为网络驱动器”；旧配置中的 `--network-mode` 参数会自动迁移，并保留其他额外参数。

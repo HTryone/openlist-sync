@@ -154,6 +154,8 @@ interface SyncGlobals {
   lowLevelRetries?: number
   contimeout?: string
   timeout?: string
+  verifyOnSync?: boolean
+  mountRCAddr?: string
 }
 
 interface SyncConfig {

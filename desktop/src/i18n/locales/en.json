@@ -332,13 +332,16 @@
       "add": "Add folder",
       "sync": "Sync",
       "syncAll": "Sync all",
-      "delete": "Remove"
+      "delete": "Remove",
+      "verify": "Verify",
+      "verifyAll": "Verify all"
     },
     "run": {
       "running": "Syncing…",
       "done": "Sync finished",
       "failed": "Sync failed (exit code {code})",
-      "output": "Output"
+      "output": "Output",
+      "verifyDone": "Verification complete"
     },
     "modal": {
       "addTitle": "Add synced folder",
@@ -354,7 +357,19 @@
       "remoteDirTip": "Leave empty to derive it as root/fixed-subfolder/name",
       "enabled": "Enable sync"
     },
-    "confirmRemove": "Stop syncing “{name}”? Only the config is removed; no files are deleted."
+    "confirmRemove": "Stop syncing “{name}”? Only the config is removed; no files are deleted.",
+    "advanced": {
+      "title": "Advanced",
+      "verifyOnSync": "Verify after sync",
+      "verifyOnSyncTip": "After each sync, download-compare local vs remote file contents and push locally-changed files (even same size) to the remote. More accurate but slower.",
+      "maxDelete": "Max delete (%)",
+      "transfers": "Transfers",
+      "checkers": "Checkers",
+      "retries": "Retries",
+      "lowLevelRetries": "Low-level retries",
+      "timeout": "IO timeout",
+      "compare": "Compare by"
+    }
   },
   "settings": {
     "app": {
