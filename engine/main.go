@@ -282,6 +282,7 @@ func (a *App) verifyJob(j Job) (string, error) {
 		return "", err
 	}
 	_ = os.MkdirAll(filepath.Dir(a.jobLog(j)), 0o755)
+	_ = os.MkdirAll(filepath.Join(a.base, "jobs"), 0o755) // check --combined 输出目录
 	logPath := a.jobLog(j)
 	if f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); e == nil {
 		fmt.Fprintf(f, "\n===== [%s] %s 深度校验开始 =====\n", time.Now().Format("2006-01-02 15:04:05"), j.Name)
@@ -314,8 +315,9 @@ func (a *App) verifyJob(j Job) (string, error) {
 	if b, err := os.ReadFile(diffList); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
 			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "== ") {
-				differing = append(differing, strings.TrimSpace(strings.TrimPrefix(line, "== ")))
+			// rclone --combined 单字符码："=" 一致，"*" 内容不同，"+" 仅本地，"-" 仅远端
+			if strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "- ") {
+				differing = append(differing, strings.TrimSpace(line[2:]))
 			}
 		}
 		_ = os.Remove(diffList)
@@ -341,6 +343,7 @@ func (a *App) verifyJob(j Job) (string, error) {
 		}
 		dst := j.RemoteDir + "/" + rel
 		out, err := a.rclone("copyto", src, dst,
+			"--no-check-dest", // 同尺寸文件 copyto 默认跳过；强制覆盖上传
 			"--log-file", logPath, "--log-level", "INFO")
 		if err != nil {
 			header += fmt.Sprintf("  ! 推送失败 %s: %v %s\n", rel, err, strings.TrimSpace(out))

@@ -448,7 +448,7 @@ func (a *App) verifyJob(j Job) (string, error) {
 			continue
 		}
 		dst := j.RemoteDir + "/" + rel
-		out, err := a.rclone("copyto", src, dst, "--log-file", logPath, "--log-level", "INFO")
+		out, err := a.rclone("copyto", src, dst, "--no-check-dest", "--log-file", logPath, "--log-level", "INFO")
 		if err != nil {
 			header += fmt.Sprintf("  ! 推送失败 %s: %v %s\n", rel, err, strings.TrimSpace(out))
 			if firstErr == nil {
